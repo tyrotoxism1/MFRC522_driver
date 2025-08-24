@@ -2,7 +2,35 @@
 #include "SPI.h"
 #include <stdint.h>
 #include "printf.h"
+#include "stm32f446xx.h"
  
+volatile uint8_t timer7_done = 0;
+
+void TIM7_IRQHandler()
+{
+	timer7_done = 1;
+	GPIOA->ODR |= GPIO_ODR_OD5;
+	TIM7->SR &= ~(TIM_SR_UIF);
+}
+
+/**
+ * _timer7_init() - Configures basic timer 7 for one pulse mode for delay
+ * timing use.
+ *
+ * Timer 7 is configured to count at 1MHz up to ARR(set in `delay()`), sending an
+ * interrupt to update a global variable indicating timer no longer in use. The timer is shared
+ * across MFRC522 objects, thus if timer is in use, another MFRC522 object
+ * cannot use delay. Timer prescalar is set to 15 assuming 17MHz input clock
+ * source to attain 1ms resolution of clock counter.   
+ */
+void _timer7_init()
+{
+	RCC->APB1ENR |= RCC_APB1ENR_TIM7EN;	
+	TIM7->CR1 |= TIM_CR1_OPM; 
+	TIM7->DIER |= TIM_DIER_UIE;
+	TIM7->PSC |= 15;
+}
+
 
 /**
  * is_initialized() - Helper function to check if `MFRC522_init` has been
@@ -20,13 +48,36 @@ uint8_t is_initialized(MFRC522_t *me)
 	return 1;
 }
 
+/**
+ * _EXTI0_init() - Sets up EXTI0 of STM32F446 to wait for rising edge of MFRC522 interrupts
+ * via PA0
+ */
+void _EXTI0_init()
+{
+	RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI0_PA;
+	EXTI->IMR |= EXTI_IMR_IM0;
+	EXTI->RTSR |= EXTI_RTSR_TR0;
+	EXTI->FTSR &= ~(EXTI_FTSR_TR0);
+	NVIC_EnableIRQ(EXTI0_IRQn);
+	//TODO: REMOVE, only for debugging EXTI IRQ is working
+	GPIOA->MODER |= GPIO_MODER_MODER5_0;
+}
+
 void MFRC522_init(MFRC522_t *me)
 {
 	SPI_init(0, 1, 0, 0);
 	SPI_disable();
 	me->status = IDLE;
 	me->error = NO_ERROR;
+	_EXTI0_init();
+	_timer7_init();
+	MFRC522_write_reg(me, ComIEnReg, MFRC522_TimerIEn);
+	GPIOA->ODR &= ~(GPIO_ODR_OD5);
+
 }
+
+
 
 void MFRC522_deinit(MFRC522_t *me)
 {
@@ -92,14 +143,12 @@ void MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
 
 	SPI_chip_deselect();
 	SPI_disable();
-	
 }
 
 void MFRC522_write_cmd(MFRC522_t *me, MFRC522_cmd cmd)
 {
 	if( !(is_initialized(me)) )
 		return;
-
 	MFRC522_write_reg(me, CommandReg, cmd);
 }	
 
@@ -108,6 +157,39 @@ void MFRC522_soft_reset(MFRC522_t *me)
 	if( !(is_initialized(me)) )
 		return;
 	MFRC522_write_cmd(me, SoftReset);
+	// Dummy delay for reset, not sure if timer should be used or not
+	for(int i=0; i<155000; i++);
+}
+
+void MFRC522_flush_FIFO(MFRC522_t *me)
+{
+	if( !(is_initialized(me)) )
+		return;
+	MFRC522_write_reg(me, FIFOLevelReg, 0x80);
+}
+
+/**
+ * MFRC522_delay() - Assigns `delay` to timer6 ARR, starts timer then waits
+ * for timer_done global variable before returning to calling function 
+ * 
+ * Timer6 is configured to count at 1MHz so `delay` is directly assigned to
+ * auto-reload register (ARR). 
+ *
+ * @delay: desired wait time in milliseconds
+ *
+ * Return: 0 on failure, 1 on success
+ */
+uint8_t MFRC522_delay(MFRC522_t *me, uint32_t delay)
+{
+	if( !(is_initialized(me)) )
+		return 0;
+	TIM7->ARR = delay;
+	//TIM7->EGR |= TIM_EGR_UG;
+	TIM7->CR1 |= TIM_CR1_CEN;
+	while(!timer7_done);
+	timer7_done = 0;
+
+	return 1;	
 }
 
 /**
@@ -124,24 +206,39 @@ void MFRC522_soft_reset(MFRC522_t *me)
  */
 uint8_t MFRC522_self_test(MFRC522_t *me)
 {
-	uint8_t tmp_val =0;
+	uint8_t tmp_val = 0;
+	uint8_t irq; 
+	uint8_t FIFO_level = 0;
 	if( !(is_initialized(me)) )
 		return 0;
+	MFRC522_write_reg(me, ComIrqReg, 0);
 	MFRC522_soft_reset(me);
+	//TODO: Add timeout to break out of while loop
+	do{
+		irq = MFRC522_read_reg(me, ComIrqReg);
+		printf("IRQ: %i\n", irq);
+	} while( !(irq & MFRC522_IRQ_IDLE) );
+
+	printf("Command: %i\n", tmp_val);
+	MFRC522_flush_FIFO(me);
 	for(int i=0; i<25; i++){
 		MFRC522_write_reg(me, FIFODataReg, 0x00);
 	}
+	MFRC522_write_cmd(me, Mem);
 	MFRC522_write_reg(me, AutoTestReg, 0x09);
 	MFRC522_write_reg(me, FIFODataReg, 0x00);
 	MFRC522_write_cmd(me, CalcCRC);
-
-	while( MFRC522_read_reg(me, FIFOLevelReg)!=64 );
+	while( MFRC522_read_reg(me, FIFOLevelReg) < 64 );
 	for(int i=0; i<64; i++){
 		if(i%8==0)
 			printf("\n");
 		tmp_val = MFRC522_read_reg(me, FIFODataReg);
 		printf("%X, ", tmp_val);
 	}
+	printf("\n");
+	MFRC522_write_cmd(me, Idle);
+	MFRC522_write_reg(me, AutoTestReg, 0x0);
+
 
 	return 0;
 }

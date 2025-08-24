@@ -1,0 +1,9 @@
+[submodule "lib/STM32F446_SPI_Driver"]
+	path = lib/STM32F446_SPI_Driver
+	url = git@github.com:tyrotoxism1/STM32F446_SPI_Driver.git
+[submodule "lib/UART_driver"]
+	path = lib/UART_driver
+	url = git@github.com:tyrotoxism1/UART_driver.git
+[submodule "lib/printf"]
+	path = lib/printf
+	url = git@github.com:mpaland/printf.git

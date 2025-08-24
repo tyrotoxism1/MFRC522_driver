@@ -5,6 +5,17 @@
 #include "SPI.h"
 
 
+#define MFRC522_IRQ_IDLE (1<<4)
+#define MFRC522_TCONST 3.389
+#define MFRC522_TRunning 8U
+#define MFRC522_TAutoRestart (1<<4) 
+#define MFRC522_TimerIEn 1U
+#define MFRC522_TimerPrescalar 2000U
+#define MFRC522_TimerPreSc_HiNib (MFRC522_TimerPrescalar >> 8) 
+#define MFRC522_TimerPreSc_Lo 208U 
+
+
+
 // Defined in section 9 of MFRC522 datasheet
 typedef enum {
 	Reserved0			= 0x00,
@@ -74,17 +85,17 @@ typedef enum {
 } PCD_reg;
 
 typedef enum MFRC522_cmd{
-	Idle,
-	Mem,
-	GenerateRandomID,
-	CalcCRC,
-	Transmit,
-	NoCmdChange,
-	Receive,
-	Transceive,
-	Reserved,
-	MFAuthent,
-	SoftReset
+	Idle = 0b0000,
+	Mem = 0b0001,
+	GenerateRandomID = 0b0010,
+	CalcCRC = 0b0011,
+	Transmit = 0b0100,
+	NoCmdChange = 0b0111,
+	Receive = 0b1000,
+	Transceive = 0b1100,
+	Reserved = 0b1101,
+	MFAuthent = 0b1110,
+	SoftReset = 0b1111
 } MFRC522_cmd;
 
 typedef enum {
@@ -97,10 +108,19 @@ typedef enum MFRC522_error {
 	NO_ERROR,
 	UNINITIALIZED,
 	SELF_TEST_FAILED,
+	TIMER_ALRDY_RUNNING,
 } MFRC522_error;
+
+typedef enum MFRC522_timer_t {
+	TIMER_UNINITIALIZED,
+	TIMER_INACTIVE,
+	TIMER_ACTIVE,
+	TIMER_DONE
+} MFRC522_timer;
 
 typedef struct MFRC522_t{
 	MFRC522_status status;
+	MFRC522_timer timer;
 	MFRC522_error error;
 	
 } MFRC522_t;
@@ -111,6 +131,8 @@ uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg);
 void MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data);
 uint8_t MFRC522_addr_trans(uint8_t addr, uint8_t rw_mode);
 void MFRC522_soft_reset(MFRC522_t *me);
+void MFRC522_flush_FIFO(MFRC522_t *me);
 uint8_t MFRC522_self_test(MFRC522_t *me);
+uint8_t MFRC522_delay(MFRC522_t *me, uint32_t delay);
 
 #endif //MFRC522_H
