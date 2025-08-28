@@ -9,8 +9,9 @@ int main(void){
 	uint8_t read_val = 0;
 	MFRC522_t MFRC522;
 	MFRC522_init(&MFRC522);
-	MFRC522_delay(&MFRC522, 50);
-	GPIOA->ODR |= GPIO_ODR_OD5;
+	read_val = MFRC522_read_reg(&MFRC522, DemodReg);
+	printf("ModeReg val: %x\n", read_val);
+
 
 /*
 	MFRC522_write_reg(&MFRC522, FIFODataReg, 0xA6);
@@ -25,9 +26,6 @@ int main(void){
 		printf("Received val = %X\n", read_val);
 	}
 */
-
-	MFRC522_self_test(&MFRC522);
-
 
 	MFRC522_deinit(&MFRC522);
 	while(1);

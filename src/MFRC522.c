@@ -1,34 +1,77 @@
 #include "MFRC522.h"
+#include "Legacy/stm32_hal_legacy.h"
 #include "SPI.h"
 #include <stdint.h>
 #include "printf.h"
 #include "stm32f446xx.h"
+#include "stm32f4xx_hal_def.h"
+#include "stm32f4xx_hal_gpio.h"
+#include "stm32f4xx_hal_spi.h"
  
-volatile uint8_t timer7_done = 0;
 
-void TIM7_IRQHandler()
+
+/**
+ * _EXTI0_init() - Sets up EXTI0 of STM32F446 to wait for rising edge of MFRC522 interrupts
+ * via PA0
+ */
+void _EXTI0_init()
 {
-	timer7_done = 1;
-	GPIOA->ODR |= GPIO_ODR_OD5;
-	TIM7->SR &= ~(TIM_SR_UIF);
+	RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI0_PA;
+	EXTI->IMR |= EXTI_IMR_IM0;
+	EXTI->RTSR |= EXTI_RTSR_TR0;
+	EXTI->FTSR &= ~(EXTI_FTSR_TR0);
+	NVIC_EnableIRQ(EXTI0_IRQn);
+	//TODO: REMOVE, only for debugging EXTI IRQ is working
+	GPIOA->MODER |= GPIO_MODER_MODER5_0;
+}
+
+void GPIO_init()
+{
+	GPIO_InitTypeDef led;
+	led.Pin = GPIO_PIN_5;
+	led.Mode = GPIO_MODE_OUTPUT_PP;	
+	led.Pull = GPIO_PULLDOWN;
+	led.Speed = GPIO_SPEED_FAST;
+	HAL_GPIO_Init(GPIOA, &led);
 }
 
 /**
- * _timer7_init() - Configures basic timer 7 for one pulse mode for delay
- * timing use.
+ * MFRC522_init() - Initializes SPI, GPIO and basic status of MFRC522 struct
  *
- * Timer 7 is configured to count at 1MHz up to ARR(set in `delay()`), sending an
- * interrupt to update a global variable indicating timer no longer in use. The timer is shared
- * across MFRC522 objects, thus if timer is in use, another MFRC522 object
- * cannot use delay. Timer prescalar is set to 15 assuming 17MHz input clock
- * source to attain 1ms resolution of clock counter.   
+ * Return: Status of initialization
+ * 0 = Success
+ * -1 = SPI failure  
  */
-void _timer7_init()
+int MFRC522_init(MFRC522_t *me)
 {
-	RCC->APB1ENR |= RCC_APB1ENR_TIM7EN;	
-	TIM7->CR1 |= TIM_CR1_OPM; 
-	TIM7->DIER |= TIM_DIER_UIE;
-	TIM7->PSC |= 15;
+	me->hspi.Instance = SPI1;
+ 	me->hspi.Init.Mode = SPI_MODE_MASTER;
+	me->hspi.Init.Direction = SPI_DIRECTION_2LINES;
+	me->hspi.Init.DataSize = SPI_DATASIZE_8BIT; 
+	me->hspi.Init.CLKPolarity = SPI_POLARITY_LOW; 
+	me->hspi.Init.CLKPhase = SPI_PHASE_1EDGE; 
+	me->hspi.Init.NSS = SPI_NSS_SOFT; 
+	//TODO: Check what master clock since communication clock is derived from that
+	me->hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2; 
+	me->hspi.Init.FirstBit = SPI_FIRSTBIT_MSB; 
+	me->hspi.Init.TIMode = SPI_TIMODE_DISABLED; 
+	me->hspi.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLED; 
+
+	if( HAL_SPI_Init(&(me->hspi)) != HAL_OK)
+		return -1;
+	GPIO_init();
+	me->status = IDLE;
+	me->error = NO_ERROR;
+
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+	return 0;
+
+}
+
+void MFRC522_deinit(MFRC522_t *me)
+{
+	HAL_SPI_DeInit(&(me->hspi));	
 }
 
 
@@ -49,45 +92,9 @@ uint8_t is_initialized(MFRC522_t *me)
 }
 
 /**
- * _EXTI0_init() - Sets up EXTI0 of STM32F446 to wait for rising edge of MFRC522 interrupts
- * via PA0
- */
-void _EXTI0_init()
-{
-	RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
-	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI0_PA;
-	EXTI->IMR |= EXTI_IMR_IM0;
-	EXTI->RTSR |= EXTI_RTSR_TR0;
-	EXTI->FTSR &= ~(EXTI_FTSR_TR0);
-	NVIC_EnableIRQ(EXTI0_IRQn);
-	//TODO: REMOVE, only for debugging EXTI IRQ is working
-	GPIOA->MODER |= GPIO_MODER_MODER5_0;
-}
-
-void MFRC522_init(MFRC522_t *me)
-{
-	SPI_init(0, 1, 0, 0);
-	SPI_disable();
-	me->status = IDLE;
-	me->error = NO_ERROR;
-	_EXTI0_init();
-	_timer7_init();
-	MFRC522_write_reg(me, ComIEnReg, MFRC522_TimerIEn);
-	GPIOA->ODR &= ~(GPIO_ODR_OD5);
-
-}
-
-
-
-void MFRC522_deinit(MFRC522_t *me)
-{
-	SPI_deinit();
-}
-
-/**
  * addr_trans() - Helper function to translates register address to read address
  *
- * When reading from MFRC522 via SPI, the MSB defines the r/w mode and the LSB
+ * When interacting with MFRC522 via SPI, the MSB defines the r/w mode and the LSB
  * is reserved. The register addresses only go up to 3Fh leaving 2 bits of room
  * for mode and reserved bit. Function shifts `addr` right one, then writes MSB
  * based on `rw_mode`.
@@ -116,19 +123,23 @@ uint8_t addr_trans(uint8_t addr, uint8_t rw_mode)
 uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 {
 	uint8_t val = 0;
+	me->Tx_buf = addr_trans(reg, READ);
 	if( !(is_initialized(me)) )
 		return 0;
+	printf("Tx buf = %X\n", me->Tx_buf);
+	while(me->hspi.State != HAL_SPI_STATE_READY);
+	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_RESET);
+	//TODO: Change timeout after testing is complete
+	HAL_SPI_TransmitReceive( &(me->hspi), &(me->Rx_buf), &(me->Tx_buf), SPI_DATASIZE_8BIT, HAL_MAX_DELAY);
+	HAL_SPI_TransmitReceive( &(me->hspi), &(me->Rx_buf), &(me->Tx_buf), SPI_DATASIZE_8BIT, HAL_MAX_DELAY);
 
-	SPI_enable();
-	SPI_chip_select(0);
-	SPI_single_transieve_poll(addr_trans(reg,READ));
-	SPI_single_transieve_poll(addr_trans(0xFF ,READ));
-	val = SPI_get_Rx_buf();
-	SPI_chip_deselect();
-	SPI_disable();
-
-	return val;
-
+	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
+	printf("SPI STATE: %i\n", me->hspi.State);
+	if(me->hspi.State != HAL_SPI_STATE_ERROR)
+		return me->Rx_buf;
+	//Might want to error handle here and not return 0, as 0 is a valid value
+	else
+		return 0; 
 }
 
 void MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
@@ -168,29 +179,6 @@ void MFRC522_flush_FIFO(MFRC522_t *me)
 	MFRC522_write_reg(me, FIFOLevelReg, 0x80);
 }
 
-/**
- * MFRC522_delay() - Assigns `delay` to timer6 ARR, starts timer then waits
- * for timer_done global variable before returning to calling function 
- * 
- * Timer6 is configured to count at 1MHz so `delay` is directly assigned to
- * auto-reload register (ARR). 
- *
- * @delay: desired wait time in milliseconds
- *
- * Return: 0 on failure, 1 on success
- */
-uint8_t MFRC522_delay(MFRC522_t *me, uint32_t delay)
-{
-	if( !(is_initialized(me)) )
-		return 0;
-	TIM7->ARR = delay;
-	//TIM7->EGR |= TIM_EGR_UG;
-	TIM7->CR1 |= TIM_CR1_CEN;
-	while(!timer7_done);
-	timer7_done = 0;
-
-	return 1;	
-}
 
 /**
  * MFRC522_self_test() - Configures and runs self test ensuring reading data
@@ -241,4 +229,59 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 
 
 	return 0;
+}
+
+/**
+ * HAL_SPI_MspInit() - Override of SPI init function to configure SPI handle
+ * and SPI low level resources
+ *
+ * Configures SPI follow guidline from STM32 user manual for STM32F4 HAL and
+ * low-layer drivers.
+ * SPI handle is declared in `MFRC522_t`. Configures SPI GPIO clock, pins are
+ * set to alternate function push-pull. Interrupt and DMA are not implemented
+ * yet, thus not configured within the SPI init.
+ *
+ *
+ */
+void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi)
+{
+	GPIO_InitTypeDef GPIO_InitStruct;
+	//SPI Clock 
+	if(hspi->Instance == SPI1){
+		__HAL_RCC_GPIOB_CLK_ENABLE();	
+		__HAL_RCC_SPI1_CLK_ENABLE();	
+
+
+		hspi->Init.Mode = SPI_MODE_MASTER;
+		hspi->Init.Direction = SPI_DIRECTION_2LINES;
+		hspi->Init.DataSize = SPI_DATASIZE_8BIT; 
+		hspi->Init.CLKPolarity = SPI_POLARITY_LOW; 
+		hspi->Init.CLKPhase = SPI_PHASE_1EDGE; 
+		hspi->Init.NSS = SPI_NSS_SOFT; 
+		//TODO: Check what master clock since communication clock is derived from that
+		hspi->Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2; 
+		hspi->Init.FirstBit = SPI_FIRSTBIT_MSB; 
+		hspi->Init.TIMode = SPI_TIMODE_DISABLED; 
+		hspi->Init.CRCCalculation = SPI_CRCCALCULATION_DISABLED; 
+
+		//SPI GPIO pin
+		//SCK
+		GPIO_InitStruct.Pin = SCK_PIN; 
+		GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+		GPIO_InitStruct.Pull = GPIO_PULLUP;
+		GPIO_InitStruct.Speed = GPIO_SPEED_FAST;
+		GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
+		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+		//MISO
+		GPIO_InitStruct.Pin = MISO_PIN; 
+		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+		//MOSI
+		GPIO_InitStruct.Pin = MOSI_PIN; 
+		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+		//CSS
+		GPIO_InitStruct.Pin = CSS_PIN;
+		GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	}		
+
+
 }
