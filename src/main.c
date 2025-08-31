@@ -7,9 +7,10 @@
 int main(void){
 	UART_config();
 	uint8_t read_val = 0;
+	printf("testing\n");
 	MFRC522_t MFRC522;
 	MFRC522_init(&MFRC522);
-	read_val = MFRC522_read_reg(&MFRC522, DemodReg);
+	read_val = MFRC522_read_reg(&MFRC522, ModeReg);
 	printf("ModeReg val: %x\n", read_val);
 
 

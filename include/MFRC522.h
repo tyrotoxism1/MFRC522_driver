@@ -1,12 +1,15 @@
 #ifndef MFRC522_H
 #define MFRC522_H
 #include <stdint.h>
+
+#include "Legacy/stm32_hal_legacy.h"
+#include "SPI.h"
+#include "printf.h"
 #include "stm32f446xx.h"
 #include "stm32f4xx_hal.h"
-#include "stm32f4xx_hal_gpio.h"
 #include "stm32f4xx_hal_def.h"
 #include "stm32f4xx_hal_spi.h"
-#include "SPI.h"
+#include "stm32f4xx_hal_gpio.h"
 
 
 #define MFRC522_IRQ_IDLE (1<<4)
@@ -18,6 +21,7 @@
 #define MFRC522_TimerPreSc_HiNib (MFRC522_TimerPrescalar >> 8) 
 #define MFRC522_TimerPreSc_Lo 208U 
 #define SPI_TIMEOUT 1000U
+#define MASTER_BOARD
 
 #define SCK_PIN GPIO_PIN_3
 #define MISO_PIN GPIO_PIN_4
@@ -141,11 +145,10 @@ int MFRC522_init(MFRC522_t *me);
 void GPIO_init();
 void MFRC522_deinit(MFRC522_t *me);
 uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg);
-void MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data);
+uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data);
 uint8_t MFRC522_addr_trans(uint8_t addr, uint8_t rw_mode);
 void MFRC522_soft_reset(MFRC522_t *me);
 void MFRC522_flush_FIFO(MFRC522_t *me);
 uint8_t MFRC522_self_test(MFRC522_t *me);
-void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi);
 
 #endif //MFRC522_H

@@ -1,14 +1,8 @@
 #include "MFRC522.h"
 #include "Legacy/stm32_hal_legacy.h"
-#include "SPI.h"
-#include <stdint.h>
-#include "printf.h"
-#include "stm32f446xx.h"
-#include "stm32f4xx_hal_def.h"
 #include "stm32f4xx_hal_gpio.h"
 #include "stm32f4xx_hal_spi.h"
- 
-
+#include <cstdint>
 
 /**
  * _EXTI0_init() - Sets up EXTI0 of STM32F446 to wait for rising edge of MFRC522 interrupts
@@ -32,7 +26,7 @@ void GPIO_init()
 	led.Pin = GPIO_PIN_5;
 	led.Mode = GPIO_MODE_OUTPUT_PP;	
 	led.Pull = GPIO_PULLDOWN;
-	led.Speed = GPIO_SPEED_FAST;
+	led.Speed = GPIO_SPEED_FREQ_MEDIUM;
 	HAL_GPIO_Init(GPIOA, &led);
 }
 
@@ -53,20 +47,20 @@ int MFRC522_init(MFRC522_t *me)
 	me->hspi.Init.CLKPhase = SPI_PHASE_1EDGE; 
 	me->hspi.Init.NSS = SPI_NSS_SOFT; 
 	//TODO: Check what master clock since communication clock is derived from that
-	me->hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2; 
+	me->hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32; 
 	me->hspi.Init.FirstBit = SPI_FIRSTBIT_MSB; 
 	me->hspi.Init.TIMode = SPI_TIMODE_DISABLED; 
 	me->hspi.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLED; 
+	me->hspi.State = HAL_SPI_STATE_RESET;
 
+	GPIO_init();
 	if( HAL_SPI_Init(&(me->hspi)) != HAL_OK)
 		return -1;
-	GPIO_init();
 	me->status = IDLE;
 	me->error = NO_ERROR;
 
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+	//HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
 	return 0;
-
 }
 
 void MFRC522_deinit(MFRC522_t *me)
@@ -122,38 +116,46 @@ uint8_t addr_trans(uint8_t addr, uint8_t rw_mode)
  */
 uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 {
-	uint8_t val = 0;
-	me->Tx_buf = addr_trans(reg, READ);
+	uint8_t rx[2];	
+	uint8_t tx[2];	
+
+	tx[0] = addr_trans(reg, READ);
+	tx[1] = 0x00;
+
 	if( !(is_initialized(me)) )
 		return 0;
-	printf("Tx buf = %X\n", me->Tx_buf);
-	while(me->hspi.State != HAL_SPI_STATE_READY);
+
 	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_RESET);
-	//TODO: Change timeout after testing is complete
-	HAL_SPI_TransmitReceive( &(me->hspi), &(me->Rx_buf), &(me->Tx_buf), SPI_DATASIZE_8BIT, HAL_MAX_DELAY);
-	HAL_SPI_TransmitReceive( &(me->hspi), &(me->Rx_buf), &(me->Tx_buf), SPI_DATASIZE_8BIT, HAL_MAX_DELAY);
+	if(HAL_SPI_TransmitReceive( &(me->hspi), tx, rx, 2, SPI_TIMEOUT) != HAL_OK){
+		printf("read reg failed\n");
+		HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
+		return 0;
+	}
 
 	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
-	printf("SPI STATE: %i\n", me->hspi.State);
 	if(me->hspi.State != HAL_SPI_STATE_ERROR)
-		return me->Rx_buf;
+		return rx[1];
 	//Might want to error handle here and not return 0, as 0 is a valid value
 	else
 		return 0; 
 }
 
-void MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
+uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
 {
 	if( !(is_initialized(me)) )
-		return;
+		return 0;
+	uint8_t tx[2];
+	tx[0] = addr_trans(reg, WRITE);
+	tx[1] = data; 
 	
-	SPI_enable();
-	SPI_chip_select(0);
-	SPI_single_transieve_poll(addr_trans(reg,WRITE));
-	SPI_single_transieve_poll(data);
-
-	SPI_chip_deselect();
-	SPI_disable();
+	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_RESET);
+	if(HAL_SPI_Transmit( &(me->hspi), tx, 2, SPI_TIMEOUT) != HAL_OK){
+		printf("write reg failed\n");
+		HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
+		return 0;
+	}
+	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
+	return ;
 }
 
 void MFRC522_write_cmd(MFRC522_t *me, MFRC522_cmd cmd)
@@ -231,57 +233,4 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 	return 0;
 }
 
-/**
- * HAL_SPI_MspInit() - Override of SPI init function to configure SPI handle
- * and SPI low level resources
- *
- * Configures SPI follow guidline from STM32 user manual for STM32F4 HAL and
- * low-layer drivers.
- * SPI handle is declared in `MFRC522_t`. Configures SPI GPIO clock, pins are
- * set to alternate function push-pull. Interrupt and DMA are not implemented
- * yet, thus not configured within the SPI init.
- *
- *
- */
-void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi)
-{
-	GPIO_InitTypeDef GPIO_InitStruct;
-	//SPI Clock 
-	if(hspi->Instance == SPI1){
-		__HAL_RCC_GPIOB_CLK_ENABLE();	
-		__HAL_RCC_SPI1_CLK_ENABLE();	
 
-
-		hspi->Init.Mode = SPI_MODE_MASTER;
-		hspi->Init.Direction = SPI_DIRECTION_2LINES;
-		hspi->Init.DataSize = SPI_DATASIZE_8BIT; 
-		hspi->Init.CLKPolarity = SPI_POLARITY_LOW; 
-		hspi->Init.CLKPhase = SPI_PHASE_1EDGE; 
-		hspi->Init.NSS = SPI_NSS_SOFT; 
-		//TODO: Check what master clock since communication clock is derived from that
-		hspi->Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2; 
-		hspi->Init.FirstBit = SPI_FIRSTBIT_MSB; 
-		hspi->Init.TIMode = SPI_TIMODE_DISABLED; 
-		hspi->Init.CRCCalculation = SPI_CRCCALCULATION_DISABLED; 
-
-		//SPI GPIO pin
-		//SCK
-		GPIO_InitStruct.Pin = SCK_PIN; 
-		GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-		GPIO_InitStruct.Pull = GPIO_PULLUP;
-		GPIO_InitStruct.Speed = GPIO_SPEED_FAST;
-		GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
-		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-		//MISO
-		GPIO_InitStruct.Pin = MISO_PIN; 
-		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-		//MOSI
-		GPIO_InitStruct.Pin = MOSI_PIN; 
-		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-		//CSS
-		GPIO_InitStruct.Pin = CSS_PIN;
-		GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	}		
-
-
-}

@@ -28,6 +28,7 @@ LDFLAGS = -T$(LINKER_SCIRPT)
 # Source files
 SRC_FILES = src/main.c \
        src/MFRC522.c \
+	   src/stm32f4xx_hal_msp.c \
        lib/UART_driver/src/uart.c \
        lib/printf/printf.c \
 	   lib/STM32F446_SPI_Driver/src/SPI.c \
@@ -81,7 +82,7 @@ gdb:
 debug:
 	@openocd -f interface/stlink.cfg -f target/stm32f4x.cfg & \
 	OCD_PID=$$!; \
-	arm-none-eabi-gdb build/firmware.elf -ex "target remote localhost:3333" -ex "monitor reset halt"; \
+	arm-none-eabi-gdb $(ELF) -ex "target remote localhost:3333" -ex "monitor reset halt"; \
 	kill $$OCD_PID
 
 
