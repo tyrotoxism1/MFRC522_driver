@@ -3,15 +3,45 @@
 #include "MFRC522.h"
 #include <stdint.h>
 
+void print_sys_info()
+{
+    uint32_t sysclk = HAL_RCC_GetSysClockFreq();
+    uint32_t hclk   = HAL_RCC_GetHCLKFreq();
+    uint32_t pclk1  = HAL_RCC_GetPCLK1Freq();
+    uint32_t pclk2  = HAL_RCC_GetPCLK2Freq();
+
+    printf("SYSCLK: %lu Hz\r\n", sysclk);
+    printf("HCLK:   %lu Hz\r\n", hclk);
+    printf("PCLK1:  %lu Hz\r\n", pclk1);
+    printf("PCLK2:  %lu Hz\r\n", pclk2);
+}
 
 int main(void){
+	//print_sys_info();
 	UART_config();
 	uint8_t read_val = 0;
-	printf("testing\n");
 	MFRC522_t MFRC522;
 	MFRC522_init(&MFRC522);
-	read_val = MFRC522_read_reg(&MFRC522, ModeReg);
-	printf("ModeReg val: %x\n", read_val);
+
+	uint16_t reg_read_ret_val = MFRC522_read_reg(&MFRC522, ModeReg);
+	if(reg_read_ret_val == MFRC522_OK)
+		printf("ModeReg val: %x\n", MFRC522_get_rx_buf(&MFRC522));
+	else
+		printf("MFRC522 read reg failed with val: %i\n", MFRC522.error);
+	reg_read_ret_val = MFRC522_read_reg(&MFRC522, ModeReg);
+	if(reg_read_ret_val == MFRC522_OK)
+		printf("ModeReg val: %x\n", MFRC522_get_rx_buf(&MFRC522));
+	else
+		printf("MFRC522 read reg failed with val: %i\n", MFRC522.error);
+	reg_read_ret_val = MFRC522_read_reg(&MFRC522, ModeReg);
+	if(reg_read_ret_val == MFRC522_OK)
+		printf("ModeReg val: %x\n", MFRC522_get_rx_buf(&MFRC522));
+	else
+		printf("MFRC522 read reg failed with val: %i\n", MFRC522.error);
+
+
+
+
 
 
 /*

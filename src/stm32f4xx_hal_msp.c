@@ -24,18 +24,21 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
 		//SCK
 		GPIO_InitStruct.Pin = SCK_PIN; 
 		GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-		GPIO_InitStruct.Pull = GPIO_PULLUP;
-		GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+		GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+		GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
 		GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
 		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 		//MISO
 		GPIO_InitStruct.Pin = MISO_PIN; 
+		GPIO_InitStruct.Pull = GPIO_NOPULL;
 		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 		//MOSI
 		GPIO_InitStruct.Pin = MOSI_PIN; 
 		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 		//CSS
 		GPIO_InitStruct.Pin = CSS_PIN;
+		GPIO_InitStruct.Pull = GPIO_PULLUP;
 		GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+		HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 	}		
 }

@@ -3,7 +3,6 @@
 #include <stdint.h>
 
 #include "Legacy/stm32_hal_legacy.h"
-#include "SPI.h"
 #include "printf.h"
 #include "stm32f446xx.h"
 #include "stm32f4xx_hal.h"
@@ -22,6 +21,8 @@
 #define MFRC522_TimerPreSc_Lo 208U 
 #define SPI_TIMEOUT 1000U
 #define MASTER_BOARD
+#define READ 0
+#define WRITE 1
 
 #define SCK_PIN GPIO_PIN_3
 #define MISO_PIN GPIO_PIN_4
@@ -29,7 +30,7 @@
 #define CSS_PIN GPIO_PIN_8
 
 
-// Defined in section 9 of MFRC522 datasheet
+// MFRC522 registers defined in section 9 of MFRC522 datasheet
 typedef enum {
 	Reserved0			= 0x00,
 	CommandReg			= 0x01,
@@ -112,6 +113,7 @@ typedef enum MFRC522_cmd{
 } MFRC522_cmd;
 
 typedef enum {
+	MFRC522_OK,
 	UNKOWN,
 	IDLE,
 	MFRC522_ERROR,
@@ -122,6 +124,8 @@ typedef enum MFRC522_error {
 	UNINITIALIZED,
 	SELF_TEST_FAILED,
 	TIMER_ALRDY_RUNNING,
+	READ_REG_FAILURE,
+	WRITE_REG_FAILURE,
 } MFRC522_error;
 
 typedef enum MFRC522_timer_t {
@@ -141,6 +145,7 @@ typedef struct MFRC522_t{
 	
 } MFRC522_t;
 
+void MFRC522_SPI_init(MFRC522_t *me);
 int MFRC522_init(MFRC522_t *me);
 void GPIO_init();
 void MFRC522_deinit(MFRC522_t *me);
@@ -150,5 +155,6 @@ uint8_t MFRC522_addr_trans(uint8_t addr, uint8_t rw_mode);
 void MFRC522_soft_reset(MFRC522_t *me);
 void MFRC522_flush_FIFO(MFRC522_t *me);
 uint8_t MFRC522_self_test(MFRC522_t *me);
+uint8_t MFRC522_get_rx_buf(MFRC522_t *me);
 
 #endif //MFRC522_H
