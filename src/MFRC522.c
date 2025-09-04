@@ -1,5 +1,6 @@
 #include "MFRC522.h"
 #include "stm32f4xx_hal.h"
+#include "stm32f4xx_hal_def.h"
 #include "stm32f4xx_hal_spi.h"
 
 /**
@@ -158,7 +159,7 @@ uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
 {
 	if( !(is_initialized(me)) )
-		return 0;
+		return me->status;
 	uint8_t tx[2];
 	tx[0] = addr_trans(reg, WRITE);
 	tx[1] = data; 
@@ -167,10 +168,18 @@ uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
 	if(HAL_SPI_Transmit( &(me->hspi), tx, 2, SPI_TIMEOUT) != HAL_OK){
 		printf("write reg failed\n");
 		HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
-		return 0;
+		me->status = MFRC522_ERROR; 
+		me->error = READ_REG_FAILURE; 
+		return MFRC522_ERROR;
 	}
 	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
-	return 0;
+	if(me->hspi.State != HAL_SPI_STATE_ERROR)
+		return HAL_OK;
+	else{
+		me->status = MFRC522_ERROR;
+		me->error = READ_REG_FAILURE;
+		return MFRC522_ERROR; 
+	}
 }
 
 void MFRC522_write_cmd(MFRC522_t *me, MFRC522_cmd cmd)
