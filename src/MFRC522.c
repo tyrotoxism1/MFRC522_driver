@@ -1,7 +1,14 @@
+/*
+ * Major TODO:
+ * - Verify all MFRC522_write_reg are not overwriting default register vals
+ * - Create enums of usefule register specific values, ei Tx1EN for enabling
+ *   transmitter 1 in the TxControlReg
+ * - Note down troubleshooting notes
+ *
+ *
+ */
 #include "MFRC522.h"
-#include "stm32f4xx_hal.h"
-#include "stm32f4xx_hal_def.h"
-#include "stm32f4xx_hal_spi.h"
+#include <stdint.h>
 
 /**
  * _EXTI0_init() - Sets up EXTI0 of STM32F446 to wait for rising edge of MFRC522 interrupts
@@ -53,19 +60,51 @@ void MFRC522_SPI_init(MFRC522_t *me)
  * Return: Status of initialization
  * 0 = Success
  * -1 = SPI failure  
+ * -2 = Version verification failed
  */
 int MFRC522_init(MFRC522_t *me)
 {
-	//HAL_Init();
+	HAL_Init();
 	MFRC522_SPI_init(me);
 	GPIO_init();
+	//TODO: move to SPI_init and change return vals
 	if( HAL_SPI_Init(&(me->hspi)) != HAL_OK)
 		return -1;
 	me->status = IDLE;
 	me->error = NO_ERROR;
+	MFRC522_soft_reset(me);
 
-	//HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-	return 0;
+	//Following init from
+	//https://github.com/OSSLibraries/Arduino_MFRC522v2/blob/master/src/MFRC522v2.cpp#L132
+	//to test for now
+	//Autostart timer
+	MFRC522_write_reg(me, TModeReg, 0x80 );
+	// TPreScaler = TModeReg[3..0]:TPrescalerReg, ie 0x0A9 = 169 => f_timer=40kHz, ie a timer period of 25μs.
+	MFRC522_write_reg(me, TPrescalarReg, 0xA9);
+	MFRC522_write_reg(me, TReloadHiReg, 0x03);
+	MFRC522_write_reg(me, TReloadLoReg, 0xE8);
+	MFRC522_write_reg(me, TxASKReg, 0x40);
+	MFRC522_write_reg(me, ModeReg, 0x3D);
+	MFRC522_TxEnable(me);
+
+	//Verify by reading version reg
+	MFRC522_read_reg(me, VersionReg);
+	if(me->Rx_buf == 0x92){
+		printf("Successfully initialized MFRC522\n"); 
+		return 0;
+	}
+	else{
+		printf("Failed to initialize MFRC522\n"); 
+		return -2;
+	}
+}
+
+void MFRC522_TxEnable(MFRC522_t *me)
+{
+	MFRC522_read_reg(me, TxControlReg);
+	uint8_t TxControlReg_default = me->Rx_buf;
+	//Enable Tx1 and Tx2 lines(user manual section 9.3.2.5)
+	MFRC522_write_reg(me, TxControlReg, TxControlReg_default|0x03);
 }
 
 void MFRC522_deinit(MFRC522_t *me)
@@ -189,13 +228,21 @@ void MFRC522_write_cmd(MFRC522_t *me, MFRC522_cmd cmd)
 	MFRC522_write_reg(me, CommandReg, cmd);
 }	
 
+/**
+ * MFRC522_soft_reset - Executes `SoftReset` cmd within MFRC522 module
+ * CommandReg then wait for `PowerDown` bit within CommandReg
+ */
 void MFRC522_soft_reset(MFRC522_t *me)
 {
 	if( !(is_initialized(me)) )
 		return;
+	uint8_t cmd_reg = 0;
 	MFRC522_write_cmd(me, SoftReset);
-	// Dummy delay for reset, not sure if timer should be used or not
-	for(int i=0; i<155000; i++);
+	do{
+		MFRC522_read_reg(me, CommandReg);
+		cmd_reg = me->Rx_buf;
+		HAL_Delay(10);
+	}while(cmd_reg & (CMDREG_POWERDOWN));
 }
 
 void MFRC522_flush_FIFO(MFRC522_t *me)
@@ -215,46 +262,121 @@ void MFRC522_flush_FIFO(MFRC522_t *me)
  * 64 to validate FIFO data. 
  * Steps described in section '16.1.1 Self Test' of MFRC522 datasheet
  * rev 3.9.
- * 
+ *
  * Return: 0 on failure, 1 on success
  */
+
 uint8_t MFRC522_self_test(MFRC522_t *me)
 {
 	uint8_t tmp_val = 0;
-	uint8_t irq; 
+	uint8_t irq, cmd_reg; 
 	uint8_t FIFO_level = 0;
 	if( !(is_initialized(me)) )
 		return 0;
 	MFRC522_write_reg(me, ComIrqReg, 0);
-	MFRC522_soft_reset(me);
+
+	MFRC522_read_reg(me, ComIrqReg);
+	irq = MFRC522_get_rx_buf(me);
+	//printf("IRQ: %X \n", irq);
+
+	MFRC522_write_reg(me, CommandReg, SoftReset);
+	HAL_Delay(50);
 	//TODO: Add timeout to break out of while loop
 	do{
-		irq = MFRC522_read_reg(me, ComIrqReg);
-		printf("IRQ: %i\n", irq);
-	} while( !(irq & MFRC522_IRQ_IDLE) );
+		MFRC522_read_reg(me, CommandReg);
+		cmd_reg = MFRC522_get_rx_buf(me);
+		printf("CMD: %X \n", cmd_reg);
+	} while( (cmd_reg & MFRC522_CMD_PWRDWN) );
 
-	printf("Command: %i\n", tmp_val);
-	MFRC522_flush_FIFO(me);
+	MFRC522_write_reg(me, FIFOLevelReg, 0x80);
+	// TODO: create write stream function
 	for(int i=0; i<25; i++){
 		MFRC522_write_reg(me, FIFODataReg, 0x00);
 	}
-	MFRC522_write_cmd(me, Mem);
+	MFRC522_write_reg(me, CommandReg, Mem);
 	MFRC522_write_reg(me, AutoTestReg, 0x09);
 	MFRC522_write_reg(me, FIFODataReg, 0x00);
-	MFRC522_write_cmd(me, CalcCRC);
-	while( MFRC522_read_reg(me, FIFOLevelReg) < 64 );
+	MFRC522_write_reg(me, CommandReg, CalcCRC);
+	do{
+		MFRC522_read_reg(me, FIFOLevelReg);
+		FIFO_level = MFRC522_get_rx_buf(me);
+	}
+	while( FIFO_level < 64 );
+	MFRC522_write_reg(me, CommandReg, Idle);
 	for(int i=0; i<64; i++){
 		if(i%8==0)
 			printf("\n");
-		tmp_val = MFRC522_read_reg(me, FIFODataReg);
+		MFRC522_read_reg(me, FIFODataReg);
+		tmp_val = MFRC522_get_rx_buf(me);
 		printf("%X, ", tmp_val);
 	}
 	printf("\n");
-	MFRC522_write_cmd(me, Idle);
-	MFRC522_write_reg(me, AutoTestReg, 0x0);
 
-
+	MFRC522_write_reg(me, AutoTestReg, 0x00);
 	return 0;
+}
+
+void MFRC522_REQA(MFRC522_t *me)
+{	
+	uint8_t atqa[2] = {0};
+	MFRC522_write_reg(me, CollReg, 0x80);
+	MFRC522_clear_IRQ(me);
+	MFRC522_flush_FIFO(me);
+	MFRC522_read_reg(me, Status1Reg);
+	printf("Status1 before transceive: %X\n", me->Rx_buf);
+
+	MFRC522_transeive(me, REQA, NULL, 0);
+
+}
+
+void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t data_buf_len)
+{	
+	uint8_t irq_val = 0;
+	uint8_t tmp = 0;
+
+	//First send cmd to FIFO
+	MFRC522_write_reg(me, FIFODataReg, cmd);
+	//TODO: modularize, just here to test REQA command 
+	MFRC522_write_reg(me, BitFramingReg, 0x07);
+
+	//Check if data is not null, then write to FIFO
+	if(*data_buf){
+		for(int i=0; i<data_buf_len; i++){
+			MFRC522_write_reg(me, FIFODataReg, data_buf[i]);
+		}
+	}
+	//write transceive command 
+	MFRC522_write_reg(me, CommandReg,Transceive);
+	//write `start` bit within BitFramingReg to start sending data
+	MFRC522_read_reg(me, BitFramingReg);
+	MFRC522_write_reg(me, BitFramingReg, (me->Rx_buf|STARTSEND));
+	//wait for transceive command to finish, indicated with either RxIRQ, IdleIrq or TimerIRQ
+	do{
+		MFRC522_read_reg(me, ComIrqReg);
+		irq_val = me->Rx_buf;
+	}while(!( (irq_val & (RxIRQ|IdleIRQ)) || (irq_val & TimerIRQ) ));
+	if(irq_val & RxIRQ)
+		printf("Rx IRQ received\n");
+	if(irq_val & IdleIRQ)
+		printf("Idle IRQ received\n");
+	if(irq_val & TimerIRQ)
+		printf("Timer timed out received\n");
+	MFRC522_read_reg(me, RxModeReg);	
+	printf("irq_val: %X, RxModeReg: %X\n", irq_val, me->Rx_buf);
+	//Print to test for now
+	MFRC522_read_reg(me, FIFOLevelReg);
+	printf("Level Reg after transceive: %X\n", me->Rx_buf);
+
+	MFRC522_read_reg(me, FIFODataReg);
+	printf("Byte 1: %X\n",me->Rx_buf);
+	MFRC522_read_reg(me, FIFODataReg);
+	printf("Byte 2: %X\n",me->Rx_buf);
+
+}
+
+void MFRC522_clear_IRQ(MFRC522_t *me)
+{
+	MFRC522_write_reg(me, ComIrqReg, 0x7F);
 }
 
 

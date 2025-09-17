@@ -3,6 +3,31 @@
 #include "MFRC522.h"
 #include <stdint.h>
 
+void read_test(MFRC522_t *MFRC522)
+{
+	uint16_t reg_read_ret_val;
+
+	reg_read_ret_val = MFRC522_read_reg(MFRC522, CommandReg);
+	if(reg_read_ret_val == MFRC522_OK)
+		printf("CommandReg val: %x\n", MFRC522_get_rx_buf(MFRC522));
+	else
+		printf("MFRC522 read reg failed with val: %i\n", MFRC522->error);
+}
+
+void write_test(MFRC522_t *MFRC522)
+{
+	uint16_t reg_write_ret_val;
+	
+	reg_write_ret_val = MFRC522_write_reg(MFRC522, CommandReg, CalcCRC );
+	
+	if(reg_write_ret_val == MFRC522_OK)
+		printf("CommandReg val: %x\n", MFRC522_get_rx_buf(MFRC522));
+	else
+		printf("MFRC522 read reg failed with val: %i\n", MFRC522->error);
+
+
+}
+
 void print_sys_info()
 {
     uint32_t sysclk = HAL_RCC_GetSysClockFreq();
@@ -20,31 +45,9 @@ int main(void){
 	//print_sys_info();
 	UART_config();
 	uint8_t read_val = 0;
-	uint16_t reg_read_ret_val;
-	uint16_t reg_write_ret_val;
 	MFRC522_t MFRC522;
 	MFRC522_init(&MFRC522);
-
-	reg_read_ret_val = MFRC522_read_reg(&MFRC522, CommandReg);
-	if(reg_read_ret_val == MFRC522_OK)
-		printf("CommandReg val: %x\n", MFRC522_get_rx_buf(&MFRC522));
-	else
-		printf("MFRC522 read reg failed with val: %i\n", MFRC522.error);
-	
-	reg_write_ret_val = MFRC522_write_reg(&MFRC522, CommandReg, CalcCRC );
-	
-	if(reg_write_ret_val == MFRC522_OK)
-		printf("CommandReg val: %x\n", MFRC522_get_rx_buf(&MFRC522));
-	else
-		printf("MFRC522 read reg failed with val: %i\n", MFRC522.error);
-
-	reg_read_ret_val = MFRC522_read_reg(&MFRC522, CommandReg);
-	if(reg_read_ret_val == MFRC522_OK)
-		printf("CommandReg val: %x\n", MFRC522_get_rx_buf(&MFRC522));
-	else
-		printf("MFRC522 read reg failed with val: %i\n", MFRC522.error);
-	
-
+	MFRC522_REQA(&MFRC522);
 
 /*
 	MFRC522_write_reg(&MFRC522, FIFODataReg, 0xA6);

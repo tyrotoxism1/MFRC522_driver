@@ -29,6 +29,7 @@ LDFLAGS = -T$(LINKER_SCIRPT)
 SRC_FILES = src/main.c \
        src/MFRC522.c \
 	   src/stm32f4xx_hal_msp.c \
+	   src/stm32f4xx_it.c \
        lib/UART_driver/src/uart.c \
        lib/printf/printf.c \
 	   lib/STM32F446_SPI_Driver/src/SPI.c \

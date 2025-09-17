@@ -12,6 +12,7 @@
 
 
 #define MFRC522_IRQ_IDLE (1<<4)
+#define MFRC522_CMD_PWRDWN (1<<4)
 #define MFRC522_TCONST 3.389
 #define MFRC522_TRunning 8U
 #define MFRC522_TAutoRestart (1<<4) 
@@ -23,12 +24,31 @@
 #define MASTER_BOARD
 #define READ 0
 #define WRITE 1
+#define CMDREG_POWERDOWN (1<<4)
+#define STARTSEND (1<<7)
+#define RxIRQ (1<<5)
+#define IdleIRQ (1<<4)
+#define TimerIRQ 1 
 
 #define SCK_PIN GPIO_PIN_3
 #define MISO_PIN GPIO_PIN_4
 #define MOSI_PIN GPIO_PIN_5
 #define CSS_PIN GPIO_PIN_8
 
+
+
+// Expected self-test dump values (from NXP datasheet Rev. 3.9, Sec. 16.1)
+// This one is for MFRC522 v2.0, adjust if using older version
+static const uint8_t MFRC522_selftest_reference[64] = {
+    0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
 
 // MFRC522 registers defined in section 9 of MFRC522 datasheet
 typedef enum {
@@ -135,6 +155,16 @@ typedef enum MFRC522_timer_t {
 	TIMER_DONE
 } MFRC522_timer;
 
+typedef enum PCD_CMD_t {
+	REQA = 0x26,
+	WUPA = 0x52,
+	SEL_CL1 = 0x93,
+	SEL_CL2 = 0x95,
+	SEL_CL3 = 0x97,
+	HLTA = 0x50, 
+	RATS = 0xE0,
+} PCD_CMD;
+
 typedef struct MFRC522_t{
 	MFRC522_status status;
 	MFRC522_timer timer;
@@ -156,5 +186,10 @@ void MFRC522_soft_reset(MFRC522_t *me);
 void MFRC522_flush_FIFO(MFRC522_t *me);
 uint8_t MFRC522_self_test(MFRC522_t *me);
 uint8_t MFRC522_get_rx_buf(MFRC522_t *me);
+void MFRC522_TxEnable(MFRC522_t *me);
+
+void MFRC522_REQA(MFRC522_t *me);
+void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t data_buf_len);
+void MFRC522_clear_IRQ(MFRC522_t *me);
 
 #endif //MFRC522_H
