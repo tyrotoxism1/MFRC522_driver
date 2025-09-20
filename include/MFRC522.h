@@ -29,7 +29,9 @@
 #define RxIRQ (1<<5)
 #define IdleIRQ (1<<4)
 #define TimerIRQ 1 
-
+#define CRCIRQ (1<<2)
+#define SEL_NUM_BYTES 9
+ 
 #define SCK_PIN GPIO_PIN_3
 #define MISO_PIN GPIO_PIN_4
 #define MOSI_PIN GPIO_PIN_5
@@ -146,6 +148,7 @@ typedef enum MFRC522_error {
 	TIMER_ALRDY_RUNNING,
 	READ_REG_FAILURE,
 	WRITE_REG_FAILURE,
+	PCD_TRANSEIVE_FAILURE,
 } MFRC522_error;
 
 typedef enum MFRC522_timer_t {
@@ -172,9 +175,10 @@ typedef struct MFRC522_t{
 	SPI_HandleTypeDef hspi;
 	uint8_t Rx_buf;
 	uint8_t Tx_buf;
-	
 } MFRC522_t;
 
+void clear_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t clear_bitmask);
+void set_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t set_bitmask);
 void MFRC522_SPI_init(MFRC522_t *me);
 int MFRC522_init(MFRC522_t *me);
 void GPIO_init();
@@ -184,12 +188,16 @@ uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data);
 uint8_t MFRC522_addr_trans(uint8_t addr, uint8_t rw_mode);
 void MFRC522_soft_reset(MFRC522_t *me);
 void MFRC522_flush_FIFO(MFRC522_t *me);
+void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *result);
 uint8_t MFRC522_self_test(MFRC522_t *me);
 uint8_t MFRC522_get_rx_buf(MFRC522_t *me);
 void MFRC522_TxEnable(MFRC522_t *me);
 
 void MFRC522_REQA(MFRC522_t *me);
+void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf );
+void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf);
 void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t data_buf_len);
+
 void MFRC522_clear_IRQ(MFRC522_t *me);
 
 #endif //MFRC522_H

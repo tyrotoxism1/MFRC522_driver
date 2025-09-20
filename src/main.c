@@ -45,9 +45,14 @@ int main(void){
 	//print_sys_info();
 	UART_config();
 	uint8_t read_val = 0;
+	uint8_t CL1_buf[5] = {0};
+	uint8_t SEL_buf[9] = {0};
+
 	MFRC522_t MFRC522;
 	MFRC522_init(&MFRC522);
 	MFRC522_REQA(&MFRC522);
+	MFRC522_CL1(&MFRC522, CL1_buf);
+	MFRC522_SEL( &MFRC522, CL1_buf);
 
 /*
 	MFRC522_write_reg(&MFRC522, FIFODataReg, 0xA6);

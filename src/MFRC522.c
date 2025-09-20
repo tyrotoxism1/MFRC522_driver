@@ -26,6 +26,16 @@ void _EXTI0_init()
 	GPIOA->MODER |= GPIO_MODER_MODER5_0;
 }
 
+void clear_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t clear_bitmask)
+{
+	MFRC522_read_reg(me, reg);
+	MFRC522_write_reg(me, reg, me->Rx_buf&(~clear_bitmask));
+}
+void set_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t set_bitmask)
+{
+	MFRC522_read_reg(me, reg);
+	MFRC522_write_reg(me, reg, me->Rx_buf|set_bitmask);
+}
 
 void GPIO_init()
 {
@@ -252,6 +262,30 @@ void MFRC522_flush_FIFO(MFRC522_t *me)
 	MFRC522_write_reg(me, FIFOLevelReg, 0x80);
 }
 
+void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *result)
+{
+	MFRC522_write_reg(me, CommandReg, IDLE);	
+	// Clear CRCIRQ
+	MFRC522_write_reg(me, DivIrqReg, 0x04);	
+	MFRC522_flush_FIFO(me);
+	for(int i=0; i<data_size; i++){
+		MFRC522_write_reg(me, FIFODataReg, data[i]);
+	}
+	MFRC522_write_reg(me, CommandReg, CalcCRC);
+
+	//wait for CRCIRQ
+	do{
+		MFRC522_read_reg(me, DivIrqReg);
+	}while( !(me->Rx_buf & CRCIRQ) ); 
+	printf("CRC Complete\n");
+	MFRC522_read_reg(me, CRCResultLSBReg);
+	result[0] = me->Rx_buf; 
+	MFRC522_read_reg(me, CRCResultMSBReg);
+	result[1] = me->Rx_buf; 
+
+	MFRC522_write_reg(me, CommandReg, IDLE);	
+
+}
 
 /**
  * MFRC522_self_test() - Configures and runs self test ensuring reading data
@@ -319,25 +353,112 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 void MFRC522_REQA(MFRC522_t *me)
 {	
 	uint8_t atqa[2] = {0};
+	//Require var to send to `MFRC522_transceive` 
+	uint8_t reqa = REQA; 
 	MFRC522_write_reg(me, CollReg, 0x80);
+	//TODO: modularize, just here to test REQA command 
+	MFRC522_write_reg(me, BitFramingReg, 0x07);
 	MFRC522_clear_IRQ(me);
 	MFRC522_flush_FIFO(me);
-	MFRC522_read_reg(me, Status1Reg);
-	printf("Status1 before transceive: %X\n", me->Rx_buf);
 
-	MFRC522_transeive(me, REQA, NULL, 0);
+	MFRC522_transeive(me, REQA, &reqa, 1);
+
+	//Print to test for now
+	MFRC522_read_reg(me, FIFOLevelReg);
+	printf("Level Reg after REQA: %X\n", me->Rx_buf);
+
+	MFRC522_read_reg(me, FIFODataReg);
+	printf("Byte 1: %X\n",me->Rx_buf);
+	MFRC522_read_reg(me, FIFODataReg);
+	printf("Byte 2: %X\n",me->Rx_buf);
+
 
 }
 
+void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
+{
+	uint8_t sel_cl1_buf[2] = {SEL_CL1, 0x20};
+	uint8_t fifo_datalevel = 0;
+	//Ensure BitFramingReg is set for sending 8 bits
+	MFRC522_read_reg(me, BitFramingReg);	
+	//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
+	clear_reg_bits(me, BitFramingReg, 0x07);
+	MFRC522_clear_IRQ(me);
+	//Clear collisions to prep MFRC522 
+	clear_reg_bits(me, CollReg, 0x80);
+	MFRC522_transeive(me, SEL_CL1, sel_cl1_buf, 2);
+
+	//Print to test for now
+	MFRC522_read_reg(me, FIFOLevelReg);
+	printf("Level Reg after SEL CL1: %X\n", me->Rx_buf);
+	fifo_datalevel = me->Rx_buf;
+
+	for(int i=0; i<fifo_datalevel; i++){
+		MFRC522_read_reg(me, FIFODataReg);
+		res_buf[i] = me->Rx_buf;
+		printf("Byte %i: %X\n",i, me->Rx_buf);
+	}
+}
+
+/* 
+ * MFRC522_SEL - Performs the final selection of PICC after anticollision has
+ * determined PICC with UID bytes
+ *
+ * Prepares and populates FIFO for `MFRC522_transeive`. The `sel_data` is the
+ * data required for selection. The passed `uid_buf` shall include the
+ * calculated BCC of the UID bytes, then the CRC is appended from the CRC
+ * coprocessor of MFRC522 
+ */
+void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
+{
+	//byte for SEL:SEL_CL1, NVB, UID[0..3], BCC and 2 CRC
+	uint8_t sel_buf[SEL_NUM_BYTES] = {SEL_CL1, 0x70};
+	uint8_t CRC_res[2] = {0};
+	uint8_t fifo_datalevel = 0;
+	//Populate uid and bcc
+	for(int i=2; i<SEL_NUM_BYTES; i++){
+		sel_buf[i] = uid_buf[i-2];
+	}
+	
+	//Grab CRC from coprocessor if it's ready
+	MFRC522_calc_CRC(me, sel_buf, SEL_NUM_BYTES-2, CRC_res);		
+	//index 0 low is CRC and index 1 is CRC high result
+	sel_buf[SEL_NUM_BYTES-2] = CRC_res[0];
+	sel_buf[SEL_NUM_BYTES-1] = CRC_res[1];
+
+	// Printing for testing
+	for(int i=0; i<SEL_NUM_BYTES; i++)
+		printf("Byte %i: %X\n", i, sel_buf[i]);
+
+	MFRC522_transeive(me, SEL_CL1, sel_buf, SEL_NUM_BYTES);	
+
+	//Print to test for now
+	MFRC522_read_reg(me, FIFOLevelReg);
+	printf("Level Reg after SEL CL1: %X\n", me->Rx_buf);
+	fifo_datalevel = me->Rx_buf;
+
+	for(int i=0; i<fifo_datalevel; i++){
+		MFRC522_read_reg(me, FIFODataReg);
+		printf("Byte %i: %X\n",i, me->Rx_buf);
+	}
+}
+
+/*
+ * data_buf needs to include CMD to make it easier to represent all data for
+ * a SEL command and so it's included in buffer when calculating CRC
+ * TODO: Change `data_buf` to include CMD and just write to FIFO
+ * One thing is to calculate CRC we need to write the same data to FIFO,
+ * ideally we just write data to FIFO once, calc CRC
+ */
 void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t data_buf_len)
 {	
 	uint8_t irq_val = 0;
 	uint8_t tmp = 0;
+	MFRC522_clear_IRQ(me);
+	MFRC522_flush_FIFO(me);
 
 	//First send cmd to FIFO
-	MFRC522_write_reg(me, FIFODataReg, cmd);
-	//TODO: modularize, just here to test REQA command 
-	MFRC522_write_reg(me, BitFramingReg, 0x07);
+	//MFRC522_write_reg(me, FIFODataReg, cmd);
 
 	//Check if data is not null, then write to FIFO
 	if(*data_buf){
@@ -345,11 +466,16 @@ void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t da
 			MFRC522_write_reg(me, FIFODataReg, data_buf[i]);
 		}
 	}
+	else{
+		printf("Invalid `data_buf` for transeive function\n");
+		me->status = MFRC522_ERROR; 
+		me->error = PCD_TRANSEIVE_FAILURE;
+		return;
+	}
 	//write transceive command 
 	MFRC522_write_reg(me, CommandReg,Transceive);
 	//write `start` bit within BitFramingReg to start sending data
-	MFRC522_read_reg(me, BitFramingReg);
-	MFRC522_write_reg(me, BitFramingReg, (me->Rx_buf|STARTSEND));
+	set_reg_bits(me, BitFramingReg, STARTSEND);
 	//wait for transceive command to finish, indicated with either RxIRQ, IdleIrq or TimerIRQ
 	do{
 		MFRC522_read_reg(me, ComIrqReg);
@@ -363,15 +489,6 @@ void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t da
 		printf("Timer timed out received\n");
 	MFRC522_read_reg(me, RxModeReg);	
 	printf("irq_val: %X, RxModeReg: %X\n", irq_val, me->Rx_buf);
-	//Print to test for now
-	MFRC522_read_reg(me, FIFOLevelReg);
-	printf("Level Reg after transceive: %X\n", me->Rx_buf);
-
-	MFRC522_read_reg(me, FIFODataReg);
-	printf("Byte 1: %X\n",me->Rx_buf);
-	MFRC522_read_reg(me, FIFODataReg);
-	printf("Byte 2: %X\n",me->Rx_buf);
-
 }
 
 void MFRC522_clear_IRQ(MFRC522_t *me)
