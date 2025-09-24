@@ -4,6 +4,7 @@
  * - Create enums of usefule register specific values, ei Tx1EN for enabling
  *   transmitter 1 in the TxControlReg
  * - Note down troubleshooting notes
+ * - Complete anticollision algorithm
  *
  *
  */
@@ -277,7 +278,6 @@ void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *
 	do{
 		MFRC522_read_reg(me, DivIrqReg);
 	}while( !(me->Rx_buf & CRCIRQ) ); 
-	printf("CRC Complete\n");
 	MFRC522_read_reg(me, CRCResultLSBReg);
 	result[0] = me->Rx_buf; 
 	MFRC522_read_reg(me, CRCResultMSBReg);
@@ -443,6 +443,82 @@ void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
 	}
 }
 
+void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr)
+{
+	uint8_t read_fifo_data[4] = {0x30, block_addr};
+	uint8_t crc_res[2] = {0};
+	uint8_t fifo_datalevel = 0;
+	MFRC522_calc_CRC(me, read_fifo_data, 2, crc_res);
+	read_fifo_data[2] = crc_res[0];
+	read_fifo_data[3] = crc_res[1];
+	for(int i=0; i<4; i++){
+		printf("read byte %i: %X\n", i, read_fifo_data[i]);
+	}
+
+	MFRC522_transeive(me, 0x30, read_fifo_data, 4);
+
+	//Print to test for now
+	MFRC522_read_reg(me, FIFOLevelReg);
+	printf("Level Reg after READ: %i\n", me->Rx_buf);
+	fifo_datalevel = me->Rx_buf;
+
+	for(int i=0; i<fifo_datalevel; i++){
+		MFRC522_read_reg(me, FIFODataReg);
+		printf("Byte %i: %X\n",i, me->Rx_buf);
+	}
+}	
+
+
+/**
+ * MFRC522_auth_PICC - Establishes a encrypted communication between PCD and
+ * PICC using sector key to allow access to specific block.
+ *
+ * MFRC522 `MFAuthent` command expects auth command, block address, sector key
+ * then serial number of card(UID) in FIFO. Successful authentication is
+ * indicated by `MFCrypto1On` bit set in `Status2Reg`. Unsuccessful
+ * authentication requires timeout.  
+ *
+ *
+ */
+void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6], uint8_t uid[4])
+{
+	uint8_t mf_auth_buf[12] = {0};
+	uint8_t com_irq = 0; 
+	uint8_t status2 = 0; 
+
+	MFRC522_flush_FIFO(me);
+	MFRC522_clear_IRQ(me);
+	//TODO: add to defines, this is for KEYA, KEYB=0x61
+	//mf_auth_buf[0] = 0x60;
+	//mf_auth_buf[1] = block_addr;
+	MFRC522_write_reg(me, FIFODataReg, 0x61);
+	MFRC522_write_reg(me, FIFODataReg, block_addr);
+	for(int i=0; i<6; i++){
+		//mf_auth_buf[i+2] = sector_key[i];
+		MFRC522_write_reg(me, FIFODataReg, sector_key[i]);
+	}
+	for(int i=0; i<4; i++){
+		//mf_auth_buf[i+8] = uid[i];
+		MFRC522_write_reg(me, FIFODataReg, uid[i]);
+	}
+	MFRC522_write_reg(me, CommandReg, MFAuthent);
+	//start timer
+	set_reg_bits(me, ControlReg, (1<<6));
+	do{
+		MFRC522_read_reg(me, ComIrqReg);
+		com_irq = me->Rx_buf;
+		MFRC522_read_reg(me, Status2Reg);
+		status2 = me->Rx_buf;
+	}while( !(status2 & 0x8) || (com_irq & (TimerIRQ|IdleIRQ) ) );
+	if(status2 & 0x08)
+		printf("MFAuthent connection Successful\n");
+	if(com_irq & IdleIRQ)
+		printf("MFAuth completed and returned to IDLE\n");
+	if(com_irq & TimerIRQ)
+		printf("MFAuth timed out\n");
+	
+}
+
 /*
  * data_buf needs to include CMD to make it easier to represent all data for
  * a SEL command and so it's included in buffer when calculating CRC
@@ -456,9 +532,6 @@ void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t da
 	uint8_t tmp = 0;
 	MFRC522_clear_IRQ(me);
 	MFRC522_flush_FIFO(me);
-
-	//First send cmd to FIFO
-	//MFRC522_write_reg(me, FIFODataReg, cmd);
 
 	//Check if data is not null, then write to FIFO
 	if(*data_buf){
@@ -494,6 +567,13 @@ void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t da
 void MFRC522_clear_IRQ(MFRC522_t *me)
 {
 	MFRC522_write_reg(me, ComIrqReg, 0x7F);
+	MFRC522_write_reg(me, DivIrqReg, 0x7F);
+}
+
+void MFRC522_stop_encrypt_comm(MFRC522_t *me)
+{
+	clear_reg_bits(me, Status2Reg, 0x08);	
+	printf("MFAuthent disconnected \n");
 }
 
 

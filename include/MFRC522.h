@@ -149,6 +149,7 @@ typedef enum MFRC522_error {
 	READ_REG_FAILURE,
 	WRITE_REG_FAILURE,
 	PCD_TRANSEIVE_FAILURE,
+	FUNC_ASSERT_FAILURE,
 } MFRC522_error;
 
 typedef enum MFRC522_timer_t {
@@ -196,8 +197,11 @@ void MFRC522_TxEnable(MFRC522_t *me);
 void MFRC522_REQA(MFRC522_t *me);
 void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf );
 void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf);
+void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr);
+void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6], uint8_t serial_num[4]);
 void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t data_buf_len);
 
 void MFRC522_clear_IRQ(MFRC522_t *me);
+void MFRC522_stop_encrypt_comm(MFRC522_t *me);
 
 #endif //MFRC522_H

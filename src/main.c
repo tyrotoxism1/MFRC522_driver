@@ -1,3 +1,4 @@
+#include "stm32f4xx_hal.h"
 #include "uart.h"
 #include "printf.h"
 #include "MFRC522.h"
@@ -47,12 +48,16 @@ int main(void){
 	uint8_t read_val = 0;
 	uint8_t CL1_buf[5] = {0};
 	uint8_t SEL_buf[9] = {0};
+	uint8_t default_key[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF ,0xFF};
 
 	MFRC522_t MFRC522;
 	MFRC522_init(&MFRC522);
 	MFRC522_REQA(&MFRC522);
 	MFRC522_CL1(&MFRC522, CL1_buf);
 	MFRC522_SEL( &MFRC522, CL1_buf);
+	MFRC522_auth_PICC(&MFRC522, 0x06, default_key, CL1_buf);	
+	MFRC522_read_PICC(&MFRC522, 0x07);
+	MFRC522_stop_encrypt_comm(&MFRC522);
 
 /*
 	MFRC522_write_reg(&MFRC522, FIFODataReg, 0xA6);
