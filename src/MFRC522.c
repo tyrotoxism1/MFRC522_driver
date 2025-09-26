@@ -1,43 +1,44 @@
 /*
  * Major TODO:
  * - Verify all MFRC522_write_reg are not overwriting default register vals
- * - Create enums of usefule register specific values, ei Tx1EN for enabling
- *   transmitter 1 in the TxControlReg
  * - Note down troubleshooting notes
  * - Complete anticollision algorithm
+ * - Validate irq complete criteria logic 
  *
  *
  */
 #include "MFRC522.h"
-#include <stdint.h>
 
 /**
- * _EXTI0_init() - Sets up EXTI0 of STM32F446 to wait for rising edge of MFRC522 interrupts
- * via PA0
+ * clear_reg_bits() - Helper function to clear specific bits within register
+ * without clearing already set bits unintentionally 
+ *
+ * @reg: desired register to modify
+ * @clear_bitmask: Bits set in bitmask are cleared (set to logic 0) within `reg` 
  */
-void _EXTI0_init()
-{
-	RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
-	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI0_PA;
-	EXTI->IMR |= EXTI_IMR_IM0;
-	EXTI->RTSR |= EXTI_RTSR_TR0;
-	EXTI->FTSR &= ~(EXTI_FTSR_TR0);
-	NVIC_EnableIRQ(EXTI0_IRQn);
-	//TODO: REMOVE, only for debugging EXTI IRQ is working
-	GPIOA->MODER |= GPIO_MODER_MODER5_0;
-}
-
 void clear_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t clear_bitmask)
 {
 	MFRC522_read_reg(me, reg);
 	MFRC522_write_reg(me, reg, me->Rx_buf&(~clear_bitmask));
 }
+
+/**
+ * set_reg_bits() - Sets bits within MFRC522 register without altering other
+ * bits within desired register.
+ *
+ * @reg: desired register to modify
+ * @clear_bitmask: Bits set in bitmask are set (to logic 0) within `reg` 
+ */
 void set_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t set_bitmask)
 {
 	MFRC522_read_reg(me, reg);
 	MFRC522_write_reg(me, reg, me->Rx_buf|set_bitmask);
 }
 
+/**
+ * GPIO_init() - Additional GPIO resources initialized for debugging or
+ * non-primary MFRC522 use.
+ */ 
 void GPIO_init()
 {
 	GPIO_InitTypeDef led;
@@ -48,6 +49,10 @@ void GPIO_init()
 	HAL_GPIO_Init(GPIOA, &led);
 }
 
+/**
+ * MFRC522_SPI_init() - Configures SPI1 to interact with MFRC522. Must be
+ * configured and called before `HAL_SPI_Init` to correctly setup SPI1. 
+ */
 void MFRC522_SPI_init(MFRC522_t *me)
 {
 	me->hspi.Instance = SPI1;
@@ -57,7 +62,6 @@ void MFRC522_SPI_init(MFRC522_t *me)
 	me->hspi.Init.CLKPolarity = SPI_POLARITY_LOW; 
 	me->hspi.Init.CLKPhase = SPI_PHASE_1EDGE; 
 	me->hspi.Init.NSS = SPI_NSS_SOFT; 
-	//TODO: Check what master clock since communication clock is derived from that
 	me->hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16; 
 	me->hspi.Init.FirstBit = SPI_FIRSTBIT_MSB; 
 	me->hspi.Init.TIMode = SPI_TIMODE_DISABLED; 
@@ -112,10 +116,7 @@ int MFRC522_init(MFRC522_t *me)
 
 void MFRC522_TxEnable(MFRC522_t *me)
 {
-	MFRC522_read_reg(me, TxControlReg);
-	uint8_t TxControlReg_default = me->Rx_buf;
-	//Enable Tx1 and Tx2 lines(user manual section 9.3.2.5)
-	MFRC522_write_reg(me, TxControlReg, TxControlReg_default|0x03);
+	set_reg_bits(me, TxControlReg, TxControl_Tx1RFEn|TxControl_Tx2RFEn);
 }
 
 void MFRC522_deinit(MFRC522_t *me)
@@ -164,10 +165,11 @@ uint8_t addr_trans(uint8_t addr, uint8_t rw_mode)
 }
 
 /** 
- * MFRC522_read_reg() - Read register byte and wait to return value
+ * MFRC522_read_reg() - Read register byte and wait for value stored at desired
+ * register address. Value is placed in `me->Rx_buf` and the status of the
+ * function is returned.  
  *
- * Return: Read value of register, 0 indicates potential error and user should
- * check object error status to confirm
+ * Return: `MFRC522_ERROR` if error occurs, otherwise `MFRC522_OK`.
  */
 uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 {
@@ -178,7 +180,7 @@ uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 		return me->status;
 
 	tx[0] = addr_trans(reg, READ);
-	tx[1] = 0x00;
+	tx[1] = 0x00; //Dummy transmit byte
 
 	if(me->hspi.State != HAL_SPI_STATE_READY)
 		printf("SPI not ready\n");
@@ -253,21 +255,21 @@ void MFRC522_soft_reset(MFRC522_t *me)
 		MFRC522_read_reg(me, CommandReg);
 		cmd_reg = me->Rx_buf;
 		HAL_Delay(10);
-	}while(cmd_reg & (CMDREG_POWERDOWN));
+	}while(cmd_reg & (CMDREG_PWRDWN));
 }
 
 void MFRC522_flush_FIFO(MFRC522_t *me)
 {
 	if( !(is_initialized(me)) )
 		return;
-	MFRC522_write_reg(me, FIFOLevelReg, 0x80);
+	MFRC522_write_reg(me, FIFOLevelReg, FIFOLevel_FlushBuffer);
 }
 
 void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *result)
 {
 	MFRC522_write_reg(me, CommandReg, IDLE);	
 	// Clear CRCIRQ
-	MFRC522_write_reg(me, DivIrqReg, 0x04);	
+	MFRC522_write_reg(me, DivIrqReg, DivIrq_CRCIrq);	
 	MFRC522_flush_FIFO(me);
 	for(int i=0; i<data_size; i++){
 		MFRC522_write_reg(me, FIFODataReg, data[i]);
@@ -277,7 +279,7 @@ void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *
 	//wait for CRCIRQ
 	do{
 		MFRC522_read_reg(me, DivIrqReg);
-	}while( !(me->Rx_buf & CRCIRQ) ); 
+	}while( !(me->Rx_buf & DivIrq_CRCIrq) ); 
 	MFRC522_read_reg(me, CRCResultLSBReg);
 	result[0] = me->Rx_buf; 
 	MFRC522_read_reg(me, CRCResultMSBReg);
@@ -307,22 +309,18 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 	uint8_t FIFO_level = 0;
 	if( !(is_initialized(me)) )
 		return 0;
-	MFRC522_write_reg(me, ComIrqReg, 0);
-
-	MFRC522_read_reg(me, ComIrqReg);
-	irq = MFRC522_get_rx_buf(me);
-	//printf("IRQ: %X \n", irq);
+	MFRC522_clear_IRQ(me);
 
 	MFRC522_write_reg(me, CommandReg, SoftReset);
 	HAL_Delay(50);
 	//TODO: Add timeout to break out of while loop
 	do{
 		MFRC522_read_reg(me, CommandReg);
-		cmd_reg = MFRC522_get_rx_buf(me);
+		cmd_reg = me->Rx_buf;
 		printf("CMD: %X \n", cmd_reg);
-	} while( (cmd_reg & MFRC522_CMD_PWRDWN) );
+	} while( (cmd_reg & CMDREG_PWRDWN) );
 
-	MFRC522_write_reg(me, FIFOLevelReg, 0x80);
+	MFRC522_flush_FIFO(me);
 	// TODO: create write stream function
 	for(int i=0; i<25; i++){
 		MFRC522_write_reg(me, FIFODataReg, 0x00);
@@ -333,7 +331,7 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 	MFRC522_write_reg(me, CommandReg, CalcCRC);
 	do{
 		MFRC522_read_reg(me, FIFOLevelReg);
-		FIFO_level = MFRC522_get_rx_buf(me);
+		FIFO_level = me->Rx_buf;
 	}
 	while( FIFO_level < 64 );
 	MFRC522_write_reg(me, CommandReg, Idle);
@@ -341,7 +339,7 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 		if(i%8==0)
 			printf("\n");
 		MFRC522_read_reg(me, FIFODataReg);
-		tmp_val = MFRC522_get_rx_buf(me);
+		tmp_val = me->Rx_buf;
 		printf("%X, ", tmp_val);
 	}
 	printf("\n");
@@ -355,9 +353,9 @@ void MFRC522_REQA(MFRC522_t *me)
 	uint8_t atqa[2] = {0};
 	//Require var to send to `MFRC522_transceive` 
 	uint8_t reqa = REQA; 
-	MFRC522_write_reg(me, CollReg, 0x80);
+	MFRC522_write_reg(me, CollReg, Coll_ValuesAfterColl);
 	//TODO: modularize, just here to test REQA command 
-	MFRC522_write_reg(me, BitFramingReg, 0x07);
+	MFRC522_write_reg(me, BitFramingReg, BitFraming_StartSend);
 	MFRC522_clear_IRQ(me);
 	MFRC522_flush_FIFO(me);
 
@@ -382,10 +380,10 @@ void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
 	//Ensure BitFramingReg is set for sending 8 bits
 	MFRC522_read_reg(me, BitFramingReg);	
 	//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
-	clear_reg_bits(me, BitFramingReg, 0x07);
+	clear_reg_bits(me, BitFramingReg, BitFraming_StartSend);
 	MFRC522_clear_IRQ(me);
 	//Clear collisions to prep MFRC522 
-	clear_reg_bits(me, CollReg, 0x80);
+	clear_reg_bits(me, CollReg, Coll_ValuesAfterColl);
 	MFRC522_transeive(me, SEL_CL1, sel_cl1_buf, 2);
 
 	//Print to test for now
@@ -445,7 +443,7 @@ void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
 
 void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr)
 {
-	uint8_t read_fifo_data[4] = {0x30, block_addr};
+	uint8_t read_fifo_data[4] = {READ_PICC, block_addr};
 	uint8_t crc_res[2] = {0};
 	uint8_t fifo_datalevel = 0;
 	MFRC522_calc_CRC(me, read_fifo_data, 2, crc_res);
@@ -455,7 +453,7 @@ void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr)
 		printf("read byte %i: %X\n", i, read_fifo_data[i]);
 	}
 
-	MFRC522_transeive(me, 0x30, read_fifo_data, 4);
+	MFRC522_transeive(me, READ_PICC, read_fifo_data, 4);
 
 	//Print to test for now
 	MFRC522_read_reg(me, FIFOLevelReg);
@@ -491,7 +489,7 @@ void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6],
 	//TODO: add to defines, this is for KEYA, KEYB=0x61
 	//mf_auth_buf[0] = 0x60;
 	//mf_auth_buf[1] = block_addr;
-	MFRC522_write_reg(me, FIFODataReg, 0x61);
+	MFRC522_write_reg(me, FIFODataReg, MFAUTH_KEYA);
 	MFRC522_write_reg(me, FIFODataReg, block_addr);
 	for(int i=0; i<6; i++){
 		//mf_auth_buf[i+2] = sector_key[i];
@@ -502,19 +500,19 @@ void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6],
 		MFRC522_write_reg(me, FIFODataReg, uid[i]);
 	}
 	MFRC522_write_reg(me, CommandReg, MFAuthent);
-	//start timer
-	set_reg_bits(me, ControlReg, (1<<6));
+	//start timer (Doesn't seem to do anything rn)
+	set_reg_bits(me, ControlReg, Control_TStartNow);
 	do{
 		MFRC522_read_reg(me, ComIrqReg);
 		com_irq = me->Rx_buf;
 		MFRC522_read_reg(me, Status2Reg);
 		status2 = me->Rx_buf;
-	}while( !(status2 & 0x8) || (com_irq & (TimerIRQ|IdleIRQ) ) );
-	if(status2 & 0x08)
+	}while( !(status2 & Status2_MFCrypto1On) || (com_irq & (ComIrq_TimerIrq|ComIrq_IdleIrq) ) );
+	if(status2 & Status2_MFCrypto1On)
 		printf("MFAuthent connection Successful\n");
-	if(com_irq & IdleIRQ)
+	if(com_irq & ComIrq_IdleIrq)
 		printf("MFAuth completed and returned to IDLE\n");
-	if(com_irq & TimerIRQ)
+	if(com_irq & ComIrq_TimerIrq)
 		printf("MFAuth timed out\n");
 	
 }
@@ -526,7 +524,7 @@ void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6],
  * One thing is to calculate CRC we need to write the same data to FIFO,
  * ideally we just write data to FIFO once, calc CRC
  */
-void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t data_buf_len)
+void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t data_buf_len)
 {	
 	uint8_t irq_val = 0;
 	uint8_t tmp = 0;
@@ -553,12 +551,12 @@ void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t da
 	do{
 		MFRC522_read_reg(me, ComIrqReg);
 		irq_val = me->Rx_buf;
-	}while(!( (irq_val & (RxIRQ|IdleIRQ)) || (irq_val & TimerIRQ) ));
-	if(irq_val & RxIRQ)
+	}while(!( (irq_val & (ComIrq_RxIrq|ComIrq_IdleIrq)) || (irq_val & ComIrq_TimerIrq) ));
+	if(irq_val & ComIrq_RxIrq)
 		printf("Rx IRQ received\n");
-	if(irq_val & IdleIRQ)
+	if(irq_val & ComIrq_IdleIrq)
 		printf("Idle IRQ received\n");
-	if(irq_val & TimerIRQ)
+	if(irq_val & ComIrq_TimerIrq)
 		printf("Timer timed out received\n");
 	MFRC522_read_reg(me, RxModeReg);	
 	printf("irq_val: %X, RxModeReg: %X\n", irq_val, me->Rx_buf);
@@ -566,18 +564,13 @@ void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t da
 
 void MFRC522_clear_IRQ(MFRC522_t *me)
 {
-	MFRC522_write_reg(me, ComIrqReg, 0x7F);
-	MFRC522_write_reg(me, DivIrqReg, 0x7F);
+	MFRC522_write_reg(me, ComIrqReg, CLEAR_IRQ_REG);
+	MFRC522_write_reg(me, DivIrqReg, CLEAR_IRQ_REG);
 }
 
 void MFRC522_stop_encrypt_comm(MFRC522_t *me)
 {
-	clear_reg_bits(me, Status2Reg, 0x08);	
+	clear_reg_bits(me, Status2Reg, Status2_MFCrypto1On);	
 	printf("MFAuthent disconnected \n");
 }
 
-
-uint8_t MFRC522_get_rx_buf(MFRC522_t *me)
-{
-	return me->Rx_buf; 
-}

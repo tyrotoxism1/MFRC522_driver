@@ -11,46 +11,95 @@
 #include "stm32f4xx_hal_gpio.h"
 
 
-#define MFRC522_IRQ_IDLE (1<<4)
-#define MFRC522_CMD_PWRDWN (1<<4)
-#define MFRC522_TCONST 3.389
-#define MFRC522_TRunning 8U
-#define MFRC522_TAutoRestart (1<<4) 
-#define MFRC522_TimerIEn 1U
-#define MFRC522_TimerPrescalar 2000U
-#define MFRC522_TimerPreSc_HiNib (MFRC522_TimerPrescalar >> 8) 
-#define MFRC522_TimerPreSc_Lo 208U 
-#define SPI_TIMEOUT 1000U
-#define MASTER_BOARD
-#define READ 0
-#define WRITE 1
-#define CMDREG_POWERDOWN (1<<4)
-#define STARTSEND (1<<7)
-#define RxIRQ (1<<5)
-#define IdleIRQ (1<<4)
-#define TimerIRQ 1 
-#define CRCIRQ (1<<2)
-#define SEL_NUM_BYTES 9
- 
+/*--------------------- MFRC522 Register definitions ---------------------*/
+// CommandReg
+#define CMDREG_RcvOff (1<<5)
+#define CMDREG_PWRDWN (1<<4)
+
+// Status1Reg
+#define Status1Reg_LoAlert 1U 
+#define Status1Reg_HiAlert (1<<1) 
+#define Status1Reg_TRunning (1<<3) 
+#define Status1Reg_Irq (1<<4) 
+#define Status1Reg_CRCReady (1<<5) 
+#define Status1Reg_CRCOk (1<<6) 
+
+// Status2Reg
+#define Status2_MFCrypto1On (1<<3)
+#define Status2_I2CForceHS (1<<6)
+#define Status2_TempSensClear (1<<7)
+
+// TModeReg
+#define TModeReg_TAutoRestart (1<<4) 
+#define TModeReg_TAuto (1<<7) 
+
+// ComIEnReg - reg to control enable/disable interrupt requests
+#define ComIEnReg_TimerIEn 1U
+#define ComIEnReg_ErrIEn (1<<1) 
+#define ComIEnReg_LoAlertIEn (1<<2) 
+#define ComIEnReg_HiAlertIEn (1<<3) 
+#define ComIEnReg_IdleIEn (1<<4) 
+#define ComIEnReg_RxIEn (1<<5) 
+#define ComIEnReg_TxIEn (1<<6) 
+#define ComIEnReg_IRqInv (1<<7) 
+
+// ComIrqReg
+#define ComIrq_TimerIrq 1U
+#define ComIrq_ErrIrq (1<<1) 
+#define ComIrq_LoAlertIrq (1<<2) 
+#define ComIrq_HiAlertIrq (1<<3) 
+#define ComIrq_IdleIrq (1<<4) 
+#define ComIrq_RxIrq (1<<5) 
+#define ComIrq_TxIrq (1<<6) 
+#define ComIrq_Set1 (1<<7) 
+
+//DivIrqReg
+#define DivIrq_CRCIrq (1<<2)
+#define DivIrq_MfinActIrq (1<<4)
+#define DivIrq_Set2 (1<<7)
+
+// ControlReg
+#define Control_TStartNow (1<<6)
+#define Control_TStopNow (1<<6)
+
+// TxControlReg
+#define TxControl_Tx1RFEn 1U
+#define TxControl_Tx2RFEn (1<<1) 
+#define TxControl_Tx2CW (1<<3) 
+#define TxControl_InvTx1RFOff (1<<4) 
+#define TxControl_InvTx2RFOff (1<<5) 
+#define TxControl_InvTx1RFon (1<<6) 
+#define TxControl_InvTx2RFon (1<<7) 
+
+// FIFOLevelReg
+#define FIFOLevel_FlushBuffer (1<<7)
+
+// CollReg - Defines first bit collisions detected on RF interface 
+#define Coll_CollPosNotValid (1<<5)
+#define Coll_ValuesAfterColl (1<<7)
+
+// BitFramingReg
+#define BitFraming_StartSend (1<<7)
+
+/*--------------------- STM32 GPIO Definitions ---------------------*/
 #define SCK_PIN GPIO_PIN_3
 #define MISO_PIN GPIO_PIN_4
 #define MOSI_PIN GPIO_PIN_5
 #define CSS_PIN GPIO_PIN_8
 
+/*--------------------- MISC Definitions ---------------------*/
+#define STARTSEND (1<<7)
+#define READ 0
+#define WRITE 1
+#define SPI_TIMEOUT 1000U
+#define MASTER_BOARD
+#define SEL_NUM_BYTES 9
+#define MFRC522_TimerPrescalar 2000U
+#define MFRC522_TimerPreSc_HiNib (MFRC522_TimerPrescalar >> 8) 
+#define MFRC522_TimerPreSc_Lo 208U 
+#define CLEAR_IRQ_REG 0x7F
 
 
-// Expected self-test dump values (from NXP datasheet Rev. 3.9, Sec. 16.1)
-// This one is for MFRC522 v2.0, adjust if using older version
-static const uint8_t MFRC522_selftest_reference[64] = {
-    0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
-};
 
 // MFRC522 registers defined in section 9 of MFRC522 datasheet
 typedef enum {
@@ -120,6 +169,8 @@ typedef enum {
 	Reserved13			= 0x3f
 } PCD_reg;
 
+
+
 typedef enum MFRC522_cmd{
 	Idle = 0b0000,
 	Mem = 0b0001,
@@ -169,6 +220,18 @@ typedef enum PCD_CMD_t {
 	RATS = 0xE0,
 } PCD_CMD;
 
+typedef enum PICC_CMD_t{
+	READ_PICC = 0x30,
+	MFAUTH_KEYA = 0x61,
+	MFAUTH_KEYB = 0x62,
+	WRITE_PICC = 0xA0,
+	DECREMENT_PICC = 0xC0,
+	INCREMENT_PICC = 0xC1,
+	RESTORE_PICC = 0xC2,
+	TRANSFER_PICC = 0xB0,
+} PICC_CMD;
+
+
 typedef struct MFRC522_t{
 	MFRC522_status status;
 	MFRC522_timer timer;
@@ -191,7 +254,6 @@ void MFRC522_soft_reset(MFRC522_t *me);
 void MFRC522_flush_FIFO(MFRC522_t *me);
 void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *result);
 uint8_t MFRC522_self_test(MFRC522_t *me);
-uint8_t MFRC522_get_rx_buf(MFRC522_t *me);
 void MFRC522_TxEnable(MFRC522_t *me);
 
 void MFRC522_REQA(MFRC522_t *me);
@@ -199,7 +261,7 @@ void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf );
 void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf);
 void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr);
 void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6], uint8_t serial_num[4]);
-void MFRC522_transeive(MFRC522_t *me, PCD_CMD cmd, uint8_t *data_buf, uint8_t data_buf_len);
+void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t data_buf_len);
 
 void MFRC522_clear_IRQ(MFRC522_t *me);
 void MFRC522_stop_encrypt_comm(MFRC522_t *me);
