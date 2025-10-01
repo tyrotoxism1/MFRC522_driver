@@ -87,6 +87,16 @@
 #define MOSI_PIN GPIO_PIN_5
 #define CSS_PIN GPIO_PIN_8
 
+
+/*--------------------- Collision Algo Definitions ---------------------*/
+//Collision algo adjacent defines like select buffer for transmission 
+#define SELECT_CL1 0x93
+#define SELECT_CL2 0x95
+#define SELECT_CL3 0x97
+#define SEL_INDEX 1U
+#define NVB_INDEX 2U
+
+
 /*--------------------- MISC Definitions ---------------------*/
 #define STARTSEND (1<<7)
 #define READ 0
@@ -98,6 +108,7 @@
 #define MFRC522_TimerPreSc_HiNib (MFRC522_TimerPrescalar >> 8) 
 #define MFRC522_TimerPreSc_Lo 208U 
 #define CLEAR_IRQ_REG 0x7F
+
 
 
 
@@ -213,9 +224,7 @@ typedef enum MFRC522_timer_t {
 typedef enum PCD_CMD_t {
 	REQA = 0x26,
 	WUPA = 0x52,
-	SEL_CL1 = 0x93,
-	SEL_CL2 = 0x95,
-	SEL_CL3 = 0x97,
+	SELECT = 0x93,
 	HLTA = 0x50, 
 	RATS = 0xE0,
 } PCD_CMD;

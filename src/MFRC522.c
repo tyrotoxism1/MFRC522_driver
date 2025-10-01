@@ -1,7 +1,6 @@
 /*
  * Major TODO:
  * - Verify all MFRC522_write_reg are not overwriting default register vals
- * - Note down troubleshooting notes
  * - Complete anticollision algorithm
  * - Validate irq complete criteria logic 
  *
@@ -375,7 +374,7 @@ void MFRC522_REQA(MFRC522_t *me)
 
 void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
 {
-	uint8_t sel_cl1_buf[2] = {SEL_CL1, 0x20};
+	uint8_t sel_cl1_buf[2] = {SELECT_CL1, 0x20};
 	uint8_t fifo_datalevel = 0;
 	//Ensure BitFramingReg is set for sending 8 bits
 	MFRC522_read_reg(me, BitFramingReg);	
@@ -384,7 +383,7 @@ void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
 	MFRC522_clear_IRQ(me);
 	//Clear collisions to prep MFRC522 
 	clear_reg_bits(me, CollReg, Coll_ValuesAfterColl);
-	MFRC522_transeive(me, SEL_CL1, sel_cl1_buf, 2);
+	MFRC522_transeive(me, SELECT_CL1, sel_cl1_buf, 2);
 
 	//Print to test for now
 	MFRC522_read_reg(me, FIFOLevelReg);
@@ -395,6 +394,28 @@ void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
 		MFRC522_read_reg(me, FIFODataReg);
 		res_buf[i] = me->Rx_buf;
 		printf("Byte %i: %X\n",i, me->Rx_buf);
+	}
+}
+
+/**
+ * MFRC522_select_PICC() - Called after response from any num of PICCs,
+ * completes selection sequence defined in ISO/IEC14443. 
+ *
+ * REQA or WAKUP command shall be executed before calling this function to
+ * assert UID size from ATQA PICC response. Outer loop is for Collision Level
+ * (CLn), then inner loop is to control max collisions within CLn to 32.  
+ *
+ */
+void MFRC522_select_PICC(MFRC522_t *me, uint8_t UID_size)
+{
+	uint8_t select_buf[9] = {0};
+	// CLn increments by 2 because difference of CL values(0x93,0x95,0x97) 
+	for(int CLn = SELECT_CL1; CLn<=SELECT_CL3; CLn+2){
+		select_buf[SEL_INDEX] = CLn;
+		select_buf[NVB_INDEX] = 0x20;
+		MFRC522_transeive(me, SELECT, select_buf, 2);
+			
+				
 	}
 }
 
@@ -409,8 +430,8 @@ void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
  */
 void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
 {
-	//byte for SEL:SEL_CL1, NVB, UID[0..3], BCC and 2 CRC
-	uint8_t sel_buf[SEL_NUM_BYTES] = {SEL_CL1, 0x70};
+	//byte for SEL: SEL_CL1, NVB, UID[0..3], BCC and 2 CRC
+	uint8_t sel_buf[SEL_NUM_BYTES] = {SELECT_CL1, 0x70};
 	uint8_t CRC_res[2] = {0};
 	uint8_t fifo_datalevel = 0;
 	//Populate uid and bcc
@@ -428,7 +449,7 @@ void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
 	for(int i=0; i<SEL_NUM_BYTES; i++)
 		printf("Byte %i: %X\n", i, sel_buf[i]);
 
-	MFRC522_transeive(me, SEL_CL1, sel_buf, SEL_NUM_BYTES);	
+	MFRC522_transeive(me, SELECT_CL1, sel_buf, SEL_NUM_BYTES);	
 
 	//Print to test for now
 	MFRC522_read_reg(me, FIFOLevelReg);

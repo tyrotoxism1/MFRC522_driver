@@ -10,7 +10,7 @@ void read_test(MFRC522_t *MFRC522)
 
 	reg_read_ret_val = MFRC522_read_reg(MFRC522, CommandReg);
 	if(reg_read_ret_val == MFRC522_OK)
-		printf("CommandReg val: %x\n", MFRC522_get_rx_buf(MFRC522));
+		printf("CommandReg val: %x\n", MFRC522->Rx_buf);
 	else
 		printf("MFRC522 read reg failed with val: %i\n", MFRC522->error);
 }
@@ -22,7 +22,7 @@ void write_test(MFRC522_t *MFRC522)
 	reg_write_ret_val = MFRC522_write_reg(MFRC522, CommandReg, CalcCRC );
 	
 	if(reg_write_ret_val == MFRC522_OK)
-		printf("CommandReg val: %x\n", MFRC522_get_rx_buf(MFRC522));
+		printf("CommandReg val: %x\n", MFRC522->Rx_buf);
 	else
 		printf("MFRC522 read reg failed with val: %i\n", MFRC522->error);
 
