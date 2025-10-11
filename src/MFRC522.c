@@ -446,16 +446,16 @@ void MFRC522_select_PICC(MFRC522_t *me)
 {
 	uint8_t select_buf[9] = {0};
 	uint8_t select_buf_len = 2;
-	uint8_t CL_collision_count = 0;
+	uint8_t CL_collision_count, valid_bits, valid_bytes = 0;
 
 	// CLn increments by 2 because difference of CL values(0x93,0x95,0x97)
-	for(uint8_t CLn = SELECT_CL1; CLn<=SELECT_CL3; CLn=+2){
+	for(uint8_t CLn = SELECT_CL1; CLn<=SELECT_CL3; CLn+=2){
 		select_buf[SEL_INDEX] = CLn;
 		select_buf[NVB_INDEX] = 0x20;
 		// Send out inital UID request
 		MFRC522_transeive(me, SELECT, select_buf, select_buf_len);
 		while(CL_collision_count<=32){
-			if( MFRC522_collision_check(me, select_buf, &select_buf_len) ){
+			if( MFRC522_collision_check(me, select_buf, &select_buf_len, &valid_bits, &valid_bytes) ){
 				MFRC522_transeive(me, SELECT, select_buf, select_buf_len);
 				CL_collision_count++;
 				// Reset BitFramingReg
@@ -471,13 +471,32 @@ void MFRC522_select_PICC(MFRC522_t *me)
 		// Received complete UID for CL within max collisions
 		if(CL_collision_count<32){
 			printf("-------------CL%X Complete!------------\n", CLn);
+			//Clear bit not included in partial byte before collision
+			uint8_t valid_bit_msk = (0xFF>>(8-valid_bits));
+			select_buf[valid_bytes+2] = (select_buf[valid_bytes+2])&valid_bit_msk;
+			
+			printf("Valid bit mask: %X,  received partial value: %X\n", valid_bit_msk, select_buf[valid_bytes+2]);
+			//select_buf[valid_bytes+2] = 
 			MFRC522_read_reg(me, FIFOLevelReg);
 			uint8_t fifo_level = me->Rx_buf;
-			for(int fifo_byte=0; fifo_byte<fifo_level; fifo_byte++){
+			printf("FIFO LEVEL: %X\n", fifo_level);
+			// Transfer the reset of the UID from FIFO into buffer
+			// First "byte" in buffer is rest of collision UID, so combine with
+			// partial computered earlier
+			MFRC522_read_reg(me, FIFODataReg);
+			select_buf[valid_bytes+2] |= me->Rx_buf;
+
+			//Only go upto fifo_level+1 to offset SEL and NVB but exclude BCC
+			//at end
+			for(int uid_byte=valid_bytes+3; uid_byte<fifo_level+1; uid_byte++){
 				MFRC522_read_reg(me, FIFODataReg);
-				printf("Byte %i: %X\n", fifo_byte, me->Rx_buf);
+				select_buf[uid_byte] = me->Rx_buf;
+			}
+			for(int i=0; i<6; i++){
+				printf("SEL buf %i: %X\n",i,select_buf[i]);
 			}
 		}
+		// Check SAK
 		break;
 	}
 }
@@ -491,9 +510,8 @@ void MFRC522_select_PICC(MFRC522_t *me)
  *	0 = No collision
  *	1 = Collision Occurred
  */
-uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t* buf_len)
+uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t* buf_len, uint8_t *valid_bits, uint8_t *valid_bytes)
 {
-	uint8_t valid_bits,valid_bytes, expected_rcv_bits = 0;
 	// Read err reg to determine if collision occurred
 	MFRC522_read_reg(me, ErrorReg);
 	uint8_t err_reg = me->Rx_buf;
@@ -503,13 +521,12 @@ uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t
 		// 0b00010000 (0d16), Divide by 8 -> 0b00000010 (0d2) so bit shift by 3
 		MFRC522_read_reg(me, CollReg);
 		printf("Collision reg: %X\n", me->Rx_buf);
-		valid_bytes= ((me->Rx_buf&Coll_CollPos_Msk) >> 3 );
+		*valid_bytes= ((me->Rx_buf&Coll_CollPos_Msk) >> 3 );
 		// Adding 3 for SEL, NVB, and last incomplete byte
-		*buf_len = valid_bytes+3;
-		valid_bits = (me->Rx_buf&Coll_CollPos_Msk)%8;
-		expected_rcv_bits = 8-valid_bits;
+		*buf_len = (*valid_bytes)+3;
+		*valid_bits = (me->Rx_buf&Coll_CollPos_Msk)%8;
 		printf("Valid Bytes: %i, Valid Bits: %i\n", valid_bytes, valid_bits);
-		for(int i=0; i<valid_bytes; i++){
+		for(int i=0; i<(*valid_bytes); i++){
 			MFRC522_read_reg(me, FIFODataReg);
 			// Place after SEL and NVB byte
 			select_picc_buf[i+2] = me->Rx_buf;
@@ -517,19 +534,20 @@ uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t
 		// Last byte has collision, read partial byte and append 1 as determining bit
 		MFRC522_read_reg(me, FIFODataReg);
 		printf("Last byte of FIFO: %X\n", me->Rx_buf);
-		select_picc_buf[valid_bytes+2] = (me->Rx_buf)|1;
+		// 2 is for skipping over SEL and NVB
+		select_picc_buf[(*valid_bytes)+2] = (me->Rx_buf)|1;
 		// Add upper nibble of `valid_bytes` with 0x20, then add `valid_bits`
 		// to lower nibble
-		select_picc_buf[NVB_INDEX] = (0x20 + (valid_bytes<<4)) | (valid_bits);
+		select_picc_buf[NVB_INDEX] = (0x20 + (*valid_bytes<<4)) | (*valid_bits);
 		printf("anticollision NVB: %X\n", select_picc_buf[NVB_INDEX]);
 		// Set TxLastBits to send valid bits of last byte
-		set_reg_bits(me, BitFramingReg, valid_bits);
+		set_reg_bits(me, BitFramingReg, *valid_bits);
 		// Align to receive remaining bits of byte where coll occurred
-		set_reg_bits(me, BitFramingReg, (expected_rcv_bits<<BitFraming_RxAlign_Pos) );
+		set_reg_bits(me, BitFramingReg, (*valid_bits<<BitFraming_RxAlign_Pos) );
 		MFRC522_read_reg(me, BitFramingReg);
 		printf("Bitframing Val: %X\n", me->Rx_buf);
 
-		for(int i=0; i<=valid_bytes+2;i++){
+		for(int i=0; i<=(*valid_bytes)+2;i++){
 			printf("select_picc_buf index %i: %X\n", i, select_picc_buf[i]);
 		}
 		return COLL_OCCURRED;
@@ -705,6 +723,10 @@ void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t da
 	if(irq_val & ComIrq_ErrIrq){
 		MFRC522_read_reg(me, ErrorReg);
 		printf("Error reg: %X\n", me->Rx_buf);
+	}
+	else{
+		MFRC522_read_reg(me, FIFOLevelReg);
+		printf("Completed Transceive, Fifo level: %X\n", me->Rx_buf);
 	}
 }
 
