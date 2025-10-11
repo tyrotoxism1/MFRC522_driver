@@ -2,18 +2,20 @@
  * Major TODO:
  * - Verify all MFRC522_write_reg are not overwriting default register vals
  * - Complete anticollision algorithm
- * - Validate irq complete criteria logic 
+ * - Verify FIFO gets cleared
+ * - have FIFO read and write stream
  *
  *
  */
 #include "MFRC522.h"
+#include <stdint.h>
 
 /**
  * clear_reg_bits() - Helper function to clear specific bits within register
- * without clearing already set bits unintentionally 
+ * without clearing already set bits unintentionally
  *
  * @reg: desired register to modify
- * @clear_bitmask: Bits set in bitmask are cleared (set to logic 0) within `reg` 
+ * @clear_bitmask: Bits set in bitmask are cleared (set to logic 0) within `reg`
  */
 void clear_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t clear_bitmask)
 {
@@ -26,7 +28,7 @@ void clear_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t clear_bitmask)
  * bits within desired register.
  *
  * @reg: desired register to modify
- * @clear_bitmask: Bits set in bitmask are set (to logic 0) within `reg` 
+ * @clear_bitmask: Bits set in bitmask are set (to logic 0) within `reg`
  */
 void set_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t set_bitmask)
 {
@@ -37,12 +39,12 @@ void set_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t set_bitmask)
 /**
  * GPIO_init() - Additional GPIO resources initialized for debugging or
  * non-primary MFRC522 use.
- */ 
+ */
 void GPIO_init()
 {
 	GPIO_InitTypeDef led;
 	led.Pin = GPIO_PIN_5;
-	led.Mode = GPIO_MODE_OUTPUT_PP;	
+	led.Mode = GPIO_MODE_OUTPUT_PP;
 	led.Pull = GPIO_PULLDOWN;
 	led.Speed = GPIO_SPEED_FREQ_MEDIUM;
 	HAL_GPIO_Init(GPIOA, &led);
@@ -50,21 +52,21 @@ void GPIO_init()
 
 /**
  * MFRC522_SPI_init() - Configures SPI1 to interact with MFRC522. Must be
- * configured and called before `HAL_SPI_Init` to correctly setup SPI1. 
+ * configured and called before `HAL_SPI_Init` to correctly setup SPI1.
  */
 void MFRC522_SPI_init(MFRC522_t *me)
 {
 	me->hspi.Instance = SPI1;
- 	me->hspi.Init.Mode = SPI_MODE_MASTER;
+	me->hspi.Init.Mode = SPI_MODE_MASTER;
 	me->hspi.Init.Direction = SPI_DIRECTION_2LINES;
-	me->hspi.Init.DataSize = SPI_DATASIZE_8BIT; 
-	me->hspi.Init.CLKPolarity = SPI_POLARITY_LOW; 
-	me->hspi.Init.CLKPhase = SPI_PHASE_1EDGE; 
-	me->hspi.Init.NSS = SPI_NSS_SOFT; 
-	me->hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16; 
-	me->hspi.Init.FirstBit = SPI_FIRSTBIT_MSB; 
-	me->hspi.Init.TIMode = SPI_TIMODE_DISABLED; 
-	me->hspi.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLED; 
+	me->hspi.Init.DataSize = SPI_DATASIZE_8BIT;
+	me->hspi.Init.CLKPolarity = SPI_POLARITY_LOW;
+	me->hspi.Init.CLKPhase = SPI_PHASE_1EDGE;
+	me->hspi.Init.NSS = SPI_NSS_SOFT;
+	me->hspi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+	me->hspi.Init.FirstBit = SPI_FIRSTBIT_MSB;
+	me->hspi.Init.TIMode = SPI_TIMODE_DISABLED;
+	me->hspi.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLED;
 	me->hspi.State = HAL_SPI_STATE_RESET;
 }
 
@@ -73,7 +75,7 @@ void MFRC522_SPI_init(MFRC522_t *me)
  *
  * Return: Status of initialization
  * 0 = Success
- * -1 = SPI failure  
+ * -1 = SPI failure
  * -2 = Version verification failed
  */
 int MFRC522_init(MFRC522_t *me)
@@ -104,11 +106,11 @@ int MFRC522_init(MFRC522_t *me)
 	//Verify by reading version reg
 	MFRC522_read_reg(me, VersionReg);
 	if(me->Rx_buf == 0x92){
-		printf("Successfully initialized MFRC522\n"); 
+		printf("\n\nSuccessfully initialized MFRC522\n");
 		return 0;
 	}
 	else{
-		printf("Failed to initialize MFRC522\n"); 
+		printf("Failed to initialize MFRC522\n");
 		return -2;
 	}
 }
@@ -120,7 +122,7 @@ void MFRC522_TxEnable(MFRC522_t *me)
 
 void MFRC522_deinit(MFRC522_t *me)
 {
-	HAL_SPI_DeInit(&(me->hspi));	
+	HAL_SPI_DeInit(&(me->hspi));
 }
 
 
@@ -148,10 +150,10 @@ uint8_t is_initialized(MFRC522_t *me)
  * for mode and reserved bit. Function shifts `addr` right 1, then writes MSB
  * based on `rw_mode`.
  *
- * @addr: Desired MFRC522 register address 
+ * @addr: Desired MFRC522 register address
  * @rw_mode: 0=read, 1=write
  *
- * Return: Converted MFRC522 register address 
+ * Return: Converted MFRC522 register address
  */
 uint8_t addr_trans(uint8_t addr, uint8_t rw_mode)
 {
@@ -163,17 +165,17 @@ uint8_t addr_trans(uint8_t addr, uint8_t rw_mode)
 	return addr;
 }
 
-/** 
+/**
  * MFRC522_read_reg() - Read register byte and wait for value stored at desired
  * register address. Value is placed in `me->Rx_buf` and the status of the
- * function is returned.  
+ * function is returned.
  *
  * Return: `MFRC522_ERROR` if error occurs, otherwise `MFRC522_OK`.
  */
 uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 {
 	uint8_t rx[2];
-	uint8_t tx[2];	
+	uint8_t tx[2];
 
 	if( !(is_initialized(me)) )
 		return me->status;
@@ -188,22 +190,22 @@ uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 	if(HAL_SPI_TransmitReceive( &(me->hspi), tx, rx, 2, SPI_TIMEOUT) != HAL_OK){
 		printf("read reg failed\n");
 		HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
-		me->status = MFRC522_ERROR; 
-		me->error = READ_REG_FAILURE; 
+		me->status = MFRC522_ERROR;
+		me->error = READ_REG_FAILURE;
 		return MFRC522_ERROR;
 	}
 
 	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
 	if(me->hspi.State != HAL_SPI_STATE_ERROR){
 		me->Rx_buf = rx[1];
-		me->status = MFRC522_OK;	
+		me->status = MFRC522_OK;
 		return MFRC522_OK;
 	}
 	//Might want to error handle here and not return 0, as 0 is a valid value
 	else{
 		me->status = MFRC522_ERROR;
 		me->error = READ_REG_FAILURE;
-		return MFRC522_ERROR; 
+		return MFRC522_ERROR;
 	}
 }
 
@@ -213,14 +215,14 @@ uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
 		return me->status;
 	uint8_t tx[2];
 	tx[0] = addr_trans(reg, WRITE);
-	tx[1] = data; 
-	
+	tx[1] = data;
+
 	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_RESET);
 	if(HAL_SPI_Transmit( &(me->hspi), tx, 2, SPI_TIMEOUT) != HAL_OK){
 		printf("write reg failed\n");
 		HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
-		me->status = MFRC522_ERROR; 
-		me->error = READ_REG_FAILURE; 
+		me->status = MFRC522_ERROR;
+		me->error = READ_REG_FAILURE;
 		return MFRC522_ERROR;
 	}
 	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
@@ -229,7 +231,7 @@ uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
 	else{
 		me->status = MFRC522_ERROR;
 		me->error = READ_REG_FAILURE;
-		return MFRC522_ERROR; 
+		return MFRC522_ERROR;
 	}
 }
 
@@ -238,7 +240,7 @@ void MFRC522_write_cmd(MFRC522_t *me, MFRC522_cmd cmd)
 	if( !(is_initialized(me)) )
 		return;
 	MFRC522_write_reg(me, CommandReg, cmd);
-}	
+}
 
 /**
  * MFRC522_soft_reset - Executes `SoftReset` cmd within MFRC522 module
@@ -264,11 +266,41 @@ void MFRC522_flush_FIFO(MFRC522_t *me)
 	MFRC522_write_reg(me, FIFOLevelReg, FIFOLevel_FlushBuffer);
 }
 
+void MFRC522_clear_FIFO(MFRC522_t *me)
+{
+	MFRC522_write_reg(me, FIFOLevelReg, FIFOLevel_FlushBuffer);
+	for(int i=0; i<64; i++){
+		MFRC522_write_reg(me, FIFODataReg, 0x00);
+	}
+	MFRC522_write_reg(me, FIFOLevelReg, FIFOLevel_FlushBuffer);
+}
+
+void MFRC522_fifo_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint8_t print)
+{
+	MFRC522_read_reg(me, FIFOLevelReg);
+	// Ensure buffer length doesn't exceed FIFO "water level"
+	if(buf_len>me->Rx_buf)
+		buf_len = me->Rx_buf;
+	for(int i=0; i<buf_len; i++){
+		MFRC522_read_reg(me, FIFODataReg);
+		buf[i] = me->Rx_buf;
+		if(print)
+			printf("Index %i: %X\n", i, me->Rx_buf);
+	}
+}
+
+void MFRC522_fifo_write_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len)
+{
+	for(int i=0; i<buf_len; i++){
+		MFRC522_write_reg(me, FIFODataReg, buf[i]);
+	}
+}
+
 void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *result)
 {
-	MFRC522_write_reg(me, CommandReg, IDLE);	
+	MFRC522_write_reg(me, CommandReg, IDLE);
 	// Clear CRCIRQ
-	MFRC522_write_reg(me, DivIrqReg, DivIrq_CRCIrq);	
+	MFRC522_write_reg(me, DivIrqReg, DivIrq_CRCIrq);
 	MFRC522_flush_FIFO(me);
 	for(int i=0; i<data_size; i++){
 		MFRC522_write_reg(me, FIFODataReg, data[i]);
@@ -278,13 +310,13 @@ void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *
 	//wait for CRCIRQ
 	do{
 		MFRC522_read_reg(me, DivIrqReg);
-	}while( !(me->Rx_buf & DivIrq_CRCIrq) ); 
+	}while( !(me->Rx_buf & DivIrq_CRCIrq) );
 	MFRC522_read_reg(me, CRCResultLSBReg);
-	result[0] = me->Rx_buf; 
+	result[0] = me->Rx_buf;
 	MFRC522_read_reg(me, CRCResultMSBReg);
-	result[1] = me->Rx_buf; 
+	result[1] = me->Rx_buf;
 
-	MFRC522_write_reg(me, CommandReg, IDLE);	
+	MFRC522_write_reg(me, CommandReg, IDLE);
 
 }
 
@@ -294,7 +326,7 @@ void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *
  *
  * Clears 25 bytes of FIFO buffer, Configures AutoTestReg, then read FIFO after
  * starting selftest with CalcCRC command. Have to wait until FIFOLevelReg is
- * 64 to validate FIFO data. 
+ * 64 to validate FIFO data.
  * Steps described in section '16.1.1 Self Test' of MFRC522 datasheet
  * rev 3.9.
  *
@@ -304,7 +336,7 @@ void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *
 uint8_t MFRC522_self_test(MFRC522_t *me)
 {
 	uint8_t tmp_val = 0;
-	uint8_t irq, cmd_reg; 
+	uint8_t irq, cmd_reg;
 	uint8_t FIFO_level = 0;
 	if( !(is_initialized(me)) )
 		return 0;
@@ -348,13 +380,13 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 }
 
 void MFRC522_REQA(MFRC522_t *me)
-{	
+{
 	uint8_t atqa[2] = {0};
-	//Require var to send to `MFRC522_transceive` 
-	uint8_t reqa = REQA; 
+	//Require var to send to `MFRC522_transceive`
+	uint8_t reqa = REQA;
 	MFRC522_write_reg(me, CollReg, Coll_ValuesAfterColl);
-	//TODO: modularize, just here to test REQA command 
-	MFRC522_write_reg(me, BitFramingReg, BitFraming_StartSend);
+	//TODO: modularize, just here to test REQA command
+	MFRC522_write_reg(me, BitFramingReg, 0x07);
 	MFRC522_clear_IRQ(me);
 	MFRC522_flush_FIFO(me);
 
@@ -369,6 +401,9 @@ void MFRC522_REQA(MFRC522_t *me)
 	MFRC522_read_reg(me, FIFODataReg);
 	printf("Byte 2: %X\n",me->Rx_buf);
 
+	//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
+	clear_reg_bits(me, BitFramingReg, 0x07);
+
 
 }
 
@@ -377,11 +412,11 @@ void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
 	uint8_t sel_cl1_buf[2] = {SELECT_CL1, 0x20};
 	uint8_t fifo_datalevel = 0;
 	//Ensure BitFramingReg is set for sending 8 bits
-	MFRC522_read_reg(me, BitFramingReg);	
+	MFRC522_read_reg(me, BitFramingReg);
 	//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
-	clear_reg_bits(me, BitFramingReg, BitFraming_StartSend);
+	clear_reg_bits(me, BitFramingReg, 0x07);
 	MFRC522_clear_IRQ(me);
-	//Clear collisions to prep MFRC522 
+	//Clear collisions to prep MFRC522
 	clear_reg_bits(me, CollReg, Coll_ValuesAfterColl);
 	MFRC522_transeive(me, SELECT_CL1, sel_cl1_buf, 2);
 
@@ -399,34 +434,120 @@ void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
 
 /**
  * MFRC522_select_PICC() - Called after response from any num of PICCs,
- * completes selection sequence defined in ISO/IEC14443. 
+ * completes selection sequence defined in ISO/IEC14443.
  *
  * REQA or WAKUP command shall be executed before calling this function to
  * assert UID size from ATQA PICC response. Outer loop is for Collision Level
- * (CLn), then inner loop is to control max collisions within CLn to 32.  
+ * (CLn), then inner loop is to control max collisions within a CLn of 32
+ * attempts.
  *
  */
-void MFRC522_select_PICC(MFRC522_t *me, uint8_t UID_size)
+void MFRC522_select_PICC(MFRC522_t *me)
 {
 	uint8_t select_buf[9] = {0};
-	// CLn increments by 2 because difference of CL values(0x93,0x95,0x97) 
-	for(int CLn = SELECT_CL1; CLn<=SELECT_CL3; CLn+2){
+	uint8_t select_buf_len = 2;
+	uint8_t CL_collision_count = 0;
+
+	// CLn increments by 2 because difference of CL values(0x93,0x95,0x97)
+	for(uint8_t CLn = SELECT_CL1; CLn<=SELECT_CL3; CLn=+2){
 		select_buf[SEL_INDEX] = CLn;
 		select_buf[NVB_INDEX] = 0x20;
-		MFRC522_transeive(me, SELECT, select_buf, 2);
-			
-				
+		// Send out inital UID request
+		MFRC522_transeive(me, SELECT, select_buf, select_buf_len);
+		while(CL_collision_count<=32){
+			if( MFRC522_collision_check(me, select_buf, &select_buf_len) ){
+				MFRC522_transeive(me, SELECT, select_buf, select_buf_len);
+				CL_collision_count++;
+				// Reset BitFramingReg
+				clear_reg_bits(me, BitFramingReg, 0x77);
+			}
+			// no coll occurred, thus should have complete UID for CLn, break
+			// out of inner bit collision loop
+			else{
+				break;
+			}
+		}
+
+		// Received complete UID for CL within max collisions
+		if(CL_collision_count<32){
+			printf("-------------CL%X Complete!------------\n", CLn);
+			MFRC522_read_reg(me, FIFOLevelReg);
+			uint8_t fifo_level = me->Rx_buf;
+			for(int fifo_byte=0; fifo_byte<fifo_level; fifo_byte++){
+				MFRC522_read_reg(me, FIFODataReg);
+				printf("Byte %i: %X\n", fifo_byte, me->Rx_buf);
+			}
+		}
+		break;
 	}
 }
 
-/* 
+/**
+ * MFRC522_collision_check() - Checks ErrorReg for collision. If collission
+ * occurs, set NVB within `select_picc_buf` and TxLastBits within
+ * BitFramingReg for next anticollision loop.
+ *
+ * Return:
+ *	0 = No collision
+ *	1 = Collision Occurred
+ */
+uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t* buf_len)
+{
+	uint8_t valid_bits,valid_bytes, expected_rcv_bits = 0;
+	// Read err reg to determine if collision occurred
+	MFRC522_read_reg(me, ErrorReg);
+	uint8_t err_reg = me->Rx_buf;
+	if(err_reg & Error_CollErr){
+		printf("Collision occurred\n");
+		// Read FIFO to store values and determine num bytes
+		// 0b00010000 (0d16), Divide by 8 -> 0b00000010 (0d2) so bit shift by 3
+		MFRC522_read_reg(me, CollReg);
+		printf("Collision reg: %X\n", me->Rx_buf);
+		valid_bytes= ((me->Rx_buf&Coll_CollPos_Msk) >> 3 );
+		// Adding 3 for SEL, NVB, and last incomplete byte
+		*buf_len = valid_bytes+3;
+		valid_bits = (me->Rx_buf&Coll_CollPos_Msk)%8;
+		expected_rcv_bits = 8-valid_bits;
+		printf("Valid Bytes: %i, Valid Bits: %i\n", valid_bytes, valid_bits);
+		for(int i=0; i<valid_bytes; i++){
+			MFRC522_read_reg(me, FIFODataReg);
+			// Place after SEL and NVB byte
+			select_picc_buf[i+2] = me->Rx_buf;
+		}
+		// Last byte has collision, read partial byte and append 1 as determining bit
+		MFRC522_read_reg(me, FIFODataReg);
+		printf("Last byte of FIFO: %X\n", me->Rx_buf);
+		select_picc_buf[valid_bytes+2] = (me->Rx_buf)|1;
+		// Add upper nibble of `valid_bytes` with 0x20, then add `valid_bits`
+		// to lower nibble
+		select_picc_buf[NVB_INDEX] = (0x20 + (valid_bytes<<4)) | (valid_bits);
+		printf("anticollision NVB: %X\n", select_picc_buf[NVB_INDEX]);
+		// Set TxLastBits to send valid bits of last byte
+		set_reg_bits(me, BitFramingReg, valid_bits);
+		// Align to receive remaining bits of byte where coll occurred
+		set_reg_bits(me, BitFramingReg, (expected_rcv_bits<<BitFraming_RxAlign_Pos) );
+		MFRC522_read_reg(me, BitFramingReg);
+		printf("Bitframing Val: %X\n", me->Rx_buf);
+
+		for(int i=0; i<=valid_bytes+2;i++){
+			printf("select_picc_buf index %i: %X\n", i, select_picc_buf[i]);
+		}
+		return COLL_OCCURRED;
+	}
+	else{
+		printf("NO Collision occurred\n");
+		return (!COLL_OCCURRED);
+	}
+}
+
+/*
  * MFRC522_SEL - Performs the final selection of PICC after anticollision has
  * determined PICC with UID bytes
  *
  * Prepares and populates FIFO for `MFRC522_transeive`. The `sel_data` is the
  * data required for selection. The passed `uid_buf` shall include the
  * calculated BCC of the UID bytes, then the CRC is appended from the CRC
- * coprocessor of MFRC522 
+ * coprocessor of MFRC522
  */
 void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
 {
@@ -438,9 +559,9 @@ void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
 	for(int i=2; i<SEL_NUM_BYTES; i++){
 		sel_buf[i] = uid_buf[i-2];
 	}
-	
+
 	//Grab CRC from coprocessor if it's ready
-	MFRC522_calc_CRC(me, sel_buf, SEL_NUM_BYTES-2, CRC_res);		
+	MFRC522_calc_CRC(me, sel_buf, SEL_NUM_BYTES-2, CRC_res);
 	//index 0 low is CRC and index 1 is CRC high result
 	sel_buf[SEL_NUM_BYTES-2] = CRC_res[0];
 	sel_buf[SEL_NUM_BYTES-1] = CRC_res[1];
@@ -449,7 +570,7 @@ void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
 	for(int i=0; i<SEL_NUM_BYTES; i++)
 		printf("Byte %i: %X\n", i, sel_buf[i]);
 
-	MFRC522_transeive(me, SELECT_CL1, sel_buf, SEL_NUM_BYTES);	
+	MFRC522_transeive(me, SELECT_CL1, sel_buf, SEL_NUM_BYTES);
 
 	//Print to test for now
 	MFRC522_read_reg(me, FIFOLevelReg);
@@ -485,7 +606,7 @@ void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr)
 		MFRC522_read_reg(me, FIFODataReg);
 		printf("Byte %i: %X\n",i, me->Rx_buf);
 	}
-}	
+}
 
 
 /**
@@ -495,15 +616,15 @@ void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr)
  * MFRC522 `MFAuthent` command expects auth command, block address, sector key
  * then serial number of card(UID) in FIFO. Successful authentication is
  * indicated by `MFCrypto1On` bit set in `Status2Reg`. Unsuccessful
- * authentication requires timeout.  
+ * authentication requires timeout.
  *
  *
  */
 void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6], uint8_t uid[4])
 {
 	uint8_t mf_auth_buf[12] = {0};
-	uint8_t com_irq = 0; 
-	uint8_t status2 = 0; 
+	uint8_t com_irq = 0;
+	uint8_t status2 = 0;
 
 	MFRC522_flush_FIFO(me);
 	MFRC522_clear_IRQ(me);
@@ -535,7 +656,7 @@ void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6],
 		printf("MFAuth completed and returned to IDLE\n");
 	if(com_irq & ComIrq_TimerIrq)
 		printf("MFAuth timed out\n");
-	
+
 }
 
 /*
@@ -546,25 +667,25 @@ void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6],
  * ideally we just write data to FIFO once, calc CRC
  */
 void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t data_buf_len)
-{	
+{
 	uint8_t irq_val = 0;
 	uint8_t tmp = 0;
 	MFRC522_clear_IRQ(me);
 	MFRC522_flush_FIFO(me);
 
 	//Check if data is not null, then write to FIFO
-	if(*data_buf){
+	if(data_buf){
 		for(int i=0; i<data_buf_len; i++){
 			MFRC522_write_reg(me, FIFODataReg, data_buf[i]);
 		}
 	}
 	else{
 		printf("Invalid `data_buf` for transeive function\n");
-		me->status = MFRC522_ERROR; 
+		me->status = MFRC522_ERROR;
 		me->error = PCD_TRANSEIVE_FAILURE;
 		return;
 	}
-	//write transceive command 
+	//write transceive command, don't set bits, that causes failure of transmission
 	MFRC522_write_reg(me, CommandReg,Transceive);
 	//write `start` bit within BitFramingReg to start sending data
 	set_reg_bits(me, BitFramingReg, STARTSEND);
@@ -579,8 +700,12 @@ void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t da
 		printf("Idle IRQ received\n");
 	if(irq_val & ComIrq_TimerIrq)
 		printf("Timer timed out received\n");
-	MFRC522_read_reg(me, RxModeReg);	
+	MFRC522_read_reg(me, RxModeReg);
 	printf("irq_val: %X, RxModeReg: %X\n", irq_val, me->Rx_buf);
+	if(irq_val & ComIrq_ErrIrq){
+		MFRC522_read_reg(me, ErrorReg);
+		printf("Error reg: %X\n", me->Rx_buf);
+	}
 }
 
 void MFRC522_clear_IRQ(MFRC522_t *me)
@@ -591,7 +716,7 @@ void MFRC522_clear_IRQ(MFRC522_t *me)
 
 void MFRC522_stop_encrypt_comm(MFRC522_t *me)
 {
-	clear_reg_bits(me, Status2Reg, Status2_MFCrypto1On);	
+	clear_reg_bits(me, Status2Reg, Status2_MFCrypto1On);
 	printf("MFAuthent disconnected \n");
 }
 

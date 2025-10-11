@@ -18,9 +18,9 @@ void read_test(MFRC522_t *MFRC522)
 void write_test(MFRC522_t *MFRC522)
 {
 	uint16_t reg_write_ret_val;
-	
+
 	reg_write_ret_val = MFRC522_write_reg(MFRC522, CommandReg, CalcCRC );
-	
+
 	if(reg_write_ret_val == MFRC522_OK)
 		printf("CommandReg val: %x\n", MFRC522->Rx_buf);
 	else
@@ -51,27 +51,24 @@ int main(void){
 	uint8_t default_key[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF ,0xFF};
 
 	MFRC522_t MFRC522;
+
 	MFRC522_init(&MFRC522);
+	MFRC522_clear_FIFO(&MFRC522);
+
+	printf("--------------REQA-------------\n");
 	MFRC522_REQA(&MFRC522);
+	printf("--------------End of REQA-------------\n");
+	MFRC522_select_PICC(&MFRC522);
+/*
+	printf("--------------CL1-------------\n");
 	MFRC522_CL1(&MFRC522, CL1_buf);
+	printf("--------------End of CL1-------------\n");
 	MFRC522_SEL( &MFRC522, CL1_buf);
-	MFRC522_auth_PICC(&MFRC522, 0x06, default_key, CL1_buf);	
+	MFRC522_auth_PICC(&MFRC522, 0x06, default_key, CL1_buf);
 	MFRC522_read_PICC(&MFRC522, 0x07);
 	MFRC522_stop_encrypt_comm(&MFRC522);
-
-/*
-	MFRC522_write_reg(&MFRC522, FIFODataReg, 0xA6);
-	MFRC522_write_reg(&MFRC522, FIFODataReg, 0x79);
-	read_val = MFRC522_read_reg(&MFRC522,FIFODataReg);
-	printf("Received val = %X\n", read_val);
-	
-	if((!read_val) && (MFRC522.status == MFRC522_ERROR) ){
-		printf("MFRC522 module is uninitialized\n");
-	}
-	else{
-		printf("Received val = %X\n", read_val);
-	}
 */
+
 
 	MFRC522_deinit(&MFRC522);
 	while(1);

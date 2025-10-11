@@ -58,6 +58,16 @@
 #define DivIrq_MfinActIrq (1<<4)
 #define DivIrq_Set2 (1<<7)
 
+// ErrorReg
+#define Error_ProtocolErr 1U
+#define Error_ParityErr (1<<1)
+#define Error_CRCErr (1<<2) 
+#define Error_CollErr (1<<3) 
+#define Error_BufferOvfl (1<<4) 
+#define Error_TempErr (1<<6) 
+#define Error_WrErr (1<<7) 
+
+
 // ControlReg
 #define Control_TStartNow (1<<6)
 #define Control_TStopNow (1<<6)
@@ -77,9 +87,13 @@
 // CollReg - Defines first bit collisions detected on RF interface 
 #define Coll_CollPosNotValid (1<<5)
 #define Coll_ValuesAfterColl (1<<7)
+#define Coll_CollPos_Msk (0x1F)
 
 // BitFramingReg
 #define BitFraming_StartSend (1<<7)
+#define BitFraming_TxLastBits_Msk (0x07)
+#define BitFraming_RxAlign_Msk (0x70)
+#define BitFraming_RxAlign_Pos (4)
 
 /*--------------------- STM32 GPIO Definitions ---------------------*/
 #define SCK_PIN GPIO_PIN_3
@@ -93,8 +107,9 @@
 #define SELECT_CL1 0x93
 #define SELECT_CL2 0x95
 #define SELECT_CL3 0x97
-#define SEL_INDEX 1U
-#define NVB_INDEX 2U
+#define SEL_INDEX 0
+#define NVB_INDEX 1
+#define COLL_OCCURRED 1 
 
 
 /*--------------------- MISC Definitions ---------------------*/
@@ -261,6 +276,9 @@ uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data);
 uint8_t MFRC522_addr_trans(uint8_t addr, uint8_t rw_mode);
 void MFRC522_soft_reset(MFRC522_t *me);
 void MFRC522_flush_FIFO(MFRC522_t *me);
+void MFRC522_clear_FIFO(MFRC522_t *me);
+void MFRC522_fifo_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint8_t print);
+void MFRC522_fifo_write_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len);
 void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *result);
 uint8_t MFRC522_self_test(MFRC522_t *me);
 void MFRC522_TxEnable(MFRC522_t *me);
@@ -274,5 +292,9 @@ void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t da
 
 void MFRC522_clear_IRQ(MFRC522_t *me);
 void MFRC522_stop_encrypt_comm(MFRC522_t *me);
+
+uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t* buf_len);
+
+void MFRC522_select_PICC(MFRC522_t *me);
 
 #endif //MFRC522_H
