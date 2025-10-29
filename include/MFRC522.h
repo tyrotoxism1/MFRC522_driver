@@ -294,7 +294,7 @@ void MFRC522_clear_IRQ(MFRC522_t *me);
 void MFRC522_stop_encrypt_comm(MFRC522_t *me);
 
 
-uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t* buf_len, uint8_t *valid_bits,uint8_t *valid_bytes);
+uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t *sel_buf_idx, uint8_t* buf_len, uint8_t *valid_bits,uint8_t *valid_bytes);
 
 void MFRC522_select_PICC(MFRC522_t *me);
 
