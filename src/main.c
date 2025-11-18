@@ -29,6 +29,23 @@ void write_test(MFRC522_t *MFRC522)
 
 }
 
+void test_block_read_and_print(MFRC522_t *MFRC522)
+{
+	uint8_t default_key[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF ,0xFF};
+	if(MFRC522_REQA(MFRC522) == ATQA_RECIEVED){ 
+		if(MFRC522_select_PICC(MFRC522) == MFRC522_OK){
+			print_picc_select_info(MFRC522);
+			MFRC522_auth_PICC(MFRC522, 0x00, default_key);
+			dump_sector_info(MFRC522, 0);
+			MFRC522_auth_PICC(MFRC522, 0x00, default_key);
+			dump_sector_info(MFRC522, 1);
+			MFRC522_stop_encrypt_comm(MFRC522);
+			MFRC522_deinit(MFRC522);
+			return;
+		}
+	}
+}
+
 void print_sys_info()
 {
     uint32_t sysclk = HAL_RCC_GetSysClockFreq();
@@ -49,29 +66,32 @@ int main(void){
 	uint8_t CL1_buf[5] = {0};
 	uint8_t SEL_buf[9] = {0};
 	uint8_t default_key[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF ,0xFF};
+	uint8_t block_write_data[16] = {0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF};
+	uint8_t block_data[16] = {0};
+	uint8_t block_addr = 0x04;
 
 	MFRC522_t MFRC522;
 
 	MFRC522_init(&MFRC522);
 	MFRC522_clear_FIFO(&MFRC522);
 
-	printf("--------------REQA-------------\n");
-	MFRC522_REQA(&MFRC522);
-	printf("--------------End of REQA-------------\n");
-	MFRC522_select_PICC(&MFRC522);
-/*
-	printf("--------------CL1-------------\n");
-	MFRC522_CL1(&MFRC522, CL1_buf);
-	printf("--------------End of CL1-------------\n");
-	MFRC522_SEL( &MFRC522, CL1_buf);
-	MFRC522_auth_PICC(&MFRC522, 0x06, default_key, CL1_buf);
-	MFRC522_read_PICC(&MFRC522, 0x07);
-	MFRC522_stop_encrypt_comm(&MFRC522);
-*/
+	while(1){
+		if(MFRC522_REQA(&MFRC522) == ATQA_RECIEVED){ 
+			if(MFRC522_select_PICC(&MFRC522) == MFRC522_OK){
+				print_picc_select_info(&MFRC522);
+				MFRC522_auth_PICC(&MFRC522, block_addr, default_key);
+				dump_sector_info(&MFRC522, 1);
+				if(MFRC522_write_PICC(&MFRC522, block_addr, block_write_data) == MFRC522_OK){
+					printf("successfully written to block %i\n", block_addr);
+					dump_sector_info(&MFRC522, 1);
+				}
+				MFRC522_stop_encrypt_comm(&MFRC522);
+				MFRC522_deinit(&MFRC522);
+				break;
+			}
+		}
+	}
 
-
-	MFRC522_deinit(&MFRC522);
-	while(1);
 
 	return 0;
 }

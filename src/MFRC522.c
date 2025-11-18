@@ -1,11 +1,11 @@
 /*
  * Major TODO:
- * - Verify all MFRC522_write_reg are not overwriting default register vals
- * - Complete anticollision algorithm
- * - Verify FIFO gets cleared
- * - have FIFO read and write stream
  * - Change MFRC522_read_reg to return read value instead of status for
  *   readability. print error instead of return  
+ * - Add HALTA command 
+ * - Add WUPA command
+ * - Add PICC write functionality
+ * - Add block access condition check function
  */
 
 #include "MFRC522.h"
@@ -54,8 +54,12 @@ void GPIO_init()
 /**
  * MFRC522_SPI_init() - Configures SPI1 to interact with MFRC522. Must be
  * configured and called before `HAL_SPI_Init` to correctly setup SPI1.
+ *
+ * Return:
+ * -1 = Fail
+ *  0 = Success 
  */
-void MFRC522_SPI_init(MFRC522_t *me)
+int MFRC522_SPI_init(MFRC522_t *me)
 {
 	me->hspi.Instance = SPI1;
 	me->hspi.Init.Mode = SPI_MODE_MASTER;
@@ -69,6 +73,11 @@ void MFRC522_SPI_init(MFRC522_t *me)
 	me->hspi.Init.TIMode = SPI_TIMODE_DISABLED;
 	me->hspi.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLED;
 	me->hspi.State = HAL_SPI_STATE_RESET;
+
+	if( HAL_SPI_Init(&(me->hspi)) != HAL_OK)
+		return -1;
+	else
+		return 0;
 }
 
 /**
@@ -82,11 +91,9 @@ void MFRC522_SPI_init(MFRC522_t *me)
 int MFRC522_init(MFRC522_t *me)
 {
 	HAL_Init();
-	MFRC522_SPI_init(me);
-	GPIO_init();
-	//TODO: move to SPI_init and change return vals
-	if( HAL_SPI_Init(&(me->hspi)) != HAL_OK)
+	if(MFRC522_SPI_init(me) == -1)
 		return -1;
+	GPIO_init();
 	me->status = IDLE;
 	me->error = NO_ERROR;
 	MFRC522_soft_reset(me);
@@ -125,6 +132,60 @@ void MFRC522_deinit(MFRC522_t *me)
 {
 	HAL_SPI_DeInit(&(me->hspi));
 }
+
+
+void print_picc_select_info(MFRC522_t *me){
+	uint8_t picc_num_bytes = ((me->curr_picc.picc_uid_size)+1)*3+1;
+	printf("PICC UID num bytes: %i\n", picc_num_bytes);
+	if(me->curr_picc.picc_state == PICC_ACTIVE){
+		printf("------------------- PICC SELECT INFO--------------------\n");
+		if(me->curr_picc.iso_14443_compliant)
+			printf("PICC IS ISO/IEC 14443 Compliant\n");	
+		else
+			printf("PICC IS NOT ISO/IEC 14443 Compliant\n");	
+		for(int i=0; i<=picc_num_bytes; i++){
+			printf("UID %i: %X\n", i, me->curr_picc.picc_uid[i]);
+		}
+	}
+	else {
+		printf("PICC not in active state\n");
+	}
+}
+
+/* dump_sector_info() - Prints out all bytes (in hex) to serial output for
+ * a single sector of PICC.
+ *
+ * Ensure PICC is selected and authentication has established encrypted
+ * communication. 
+ * `Sector` parameter is multiplied by 4 to get starting block address of
+ * sector. 
+ */
+void dump_sector_info(MFRC522_t *me, uint8_t sector)
+{
+	if(me->curr_picc.picc_state != PICC_ACTIVE){
+		printf("Cannot dump sector info, PICC is not in ACTIVE state\n");
+		return;
+	}
+	uint8_t block_addr_strt = sector*4;
+	uint8_t block_data[64] = {0};
+	
+	printf("Grabbing sector %i info\n", sector);
+	for(int sctr_blck=0; sctr_blck<4; sctr_blck++){
+		MFRC522_read_PICC(me, block_addr_strt+sctr_blck, block_data+(16*sctr_blck));	
+	}
+	printf("------------------Sector %i Data ------------------\n", sector);
+	for(int block=0; block<4; block++){
+		printf("\n---Block %i---\n", block);
+		for(int byte=0; byte<16; byte++){
+			if(byte==8)
+				printf("\n");
+			printf("%i:%X\t", byte, block_data[byte+(16*block)]);
+			
+		}
+	}
+	printf("\n\n");
+}
+
 
 
 /**
@@ -276,7 +337,7 @@ void MFRC522_clear_FIFO(MFRC522_t *me)
 	MFRC522_write_reg(me, FIFOLevelReg, FIFOLevel_FlushBuffer);
 }
 
-void MFRC522_fifo_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint8_t print)
+void MFRC522_FIFO_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint8_t print)
 {
 	MFRC522_read_reg(me, FIFOLevelReg);
 	// Ensure buffer length doesn't exceed FIFO "water level"
@@ -290,7 +351,7 @@ void MFRC522_fifo_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint
 	}
 }
 
-void MFRC522_fifo_write_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len)
+void MFRC522_FIFO_write_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len)
 {
 	for(int i=0; i<buf_len; i++){
 		MFRC522_write_reg(me, FIFODataReg, buf[i]);
@@ -331,16 +392,19 @@ void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *
  * Steps described in section '16.1.1 Self Test' of MFRC522 datasheet
  * rev 3.9.
  *
- * Return: 0 on failure, 1 on success
+ * Return: 
+ * - -1 = failure
+ * - 0 = success
  */
 
-uint8_t MFRC522_self_test(MFRC522_t *me)
+int MFRC522_self_test(MFRC522_t *me)
 {
 	uint8_t tmp_val = 0;
 	uint8_t irq, cmd_reg;
 	uint8_t FIFO_level = 0;
+	uint8_t fifo_data_buf[25] = {0};
 	if( !(is_initialized(me)) )
-		return 0;
+		return -1;
 	MFRC522_clear_IRQ(me);
 
 	MFRC522_write_reg(me, CommandReg, SoftReset);
@@ -353,10 +417,8 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 	} while( (cmd_reg & CMDREG_PWRDWN) );
 
 	MFRC522_flush_FIFO(me);
-	// TODO: create write stream function
-	for(int i=0; i<25; i++){
-		MFRC522_write_reg(me, FIFODataReg, 0x00);
-	}
+	MFRC522_FIFO_write_stream(me, fifo_data_buf, 25);
+
 	MFRC522_write_reg(me, CommandReg, Mem);
 	MFRC522_write_reg(me, AutoTestReg, 0x09);
 	MFRC522_write_reg(me, FIFODataReg, 0x00);
@@ -380,7 +442,16 @@ uint8_t MFRC522_self_test(MFRC522_t *me)
 	return 0;
 }
 
-void MFRC522_REQA(MFRC522_t *me)
+
+void init_picc(MFRC522_t *me, PICC_SIZE_t uid_size){
+	me->curr_picc.picc_state = PICC_STATE_UNKNOWN;
+	me->curr_picc.picc_uid_complete = 0;
+	me->curr_picc.picc_uid_size = uid_size;
+	me->curr_picc.iso_14443_compliant = PICC_IS_UKNOWN_ISOIEC1443_COMPLIANT; 
+}
+
+
+uint8_t MFRC522_REQA(MFRC522_t *me)
 {
 	uint8_t atqa[2] = {0};
 	//Require var to send to `MFRC522_transceive`
@@ -393,19 +464,67 @@ void MFRC522_REQA(MFRC522_t *me)
 
 	MFRC522_transeive(me, REQA, &reqa, 1);
 
-	//Print to test for now
-	MFRC522_read_reg(me, FIFOLevelReg);
-	printf("Level Reg after REQA: %X\n", me->Rx_buf);
+	if(me->status !=  MFRC522_OK){
+		//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
+		clear_reg_bits(me, BitFramingReg, 0x07);
+		return NO_ATQA_RECIEVED;
+	}
+	else {
+		printf("Received REQA! STATUS: %i\n", me->status);
+		//Print to test for now
+		MFRC522_read_reg(me, FIFOLevelReg);
+		printf("Level Reg after REQA: %X\n", me->Rx_buf);
 
-	MFRC522_read_reg(me, FIFODataReg);
-	printf("Byte 1: %X\n",me->Rx_buf);
-	MFRC522_read_reg(me, FIFODataReg);
-	printf("Byte 2: %X\n",me->Rx_buf);
+		MFRC522_read_reg(me, FIFODataReg);
+		printf("ATQA 1: %X\n",me->Rx_buf);
+		atqa[0] = me->Rx_buf;
+		MFRC522_read_reg(me, FIFODataReg);
+		printf("ATQA 2: %X\n",me->Rx_buf);
+		atqa[1] = me->Rx_buf;
+		//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
+		clear_reg_bits(me, BitFramingReg, 0x07);
+		init_picc(me, (atqa[0])>>6);
 
-	//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
-	clear_reg_bits(me, BitFramingReg, 0x07);
+		return ATQA_RECIEVED;
+	}
+}
 
+uint8_t MFRC522_WUPA(MFRC522_t *me)
+{
+	uint8_t atqa[2] = {0};
+	//Require var to send to `MFRC522_transceive`
+	PCD_CMD_t wupa = WUPA;
+	MFRC522_write_reg(me, CollReg, Coll_ValuesAfterColl);
+	//TODO: modularize, just here to test wupa command
+	MFRC522_write_reg(me, BitFramingReg, 0x07);
+	MFRC522_clear_IRQ(me);
+	MFRC522_flush_FIFO(me);
 
+	MFRC522_transeive(me, WUPA, &wupa, 1);
+
+	if(me->status !=  MFRC522_OK){
+		//Clear first 3 bits to reset sending to 8 bits instead of 7 from wupa
+		clear_reg_bits(me, BitFramingReg, 0x07);
+		return NO_ATQA_RECIEVED;
+	}
+	else {
+		printf("Received wupa! STATUS: %i\n", me->status);
+		//Print to test for now
+		MFRC522_read_reg(me, FIFOLevelReg);
+		printf("Level Reg after wupa: %X\n", me->Rx_buf);
+
+		MFRC522_read_reg(me, FIFODataReg);
+		printf("ATQA 1: %X\n",me->Rx_buf);
+		atqa[0] = me->Rx_buf;
+		MFRC522_read_reg(me, FIFODataReg);
+		printf("ATQA 2: %X\n",me->Rx_buf);
+		atqa[1] = me->Rx_buf;
+		//Clear first 3 bits to reset sending to 8 bits instead of 7 from wupa
+		clear_reg_bits(me, BitFramingReg, 0x07);
+		init_picc(me, (atqa[0])>>6);
+
+		return ATQA_RECIEVED;
+	}
 }
 
 void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
@@ -433,6 +552,31 @@ void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
 	}
 }
 
+uint8_t valid_bcc(uint8_t data[4], uint8_t bcc)
+{
+	uint8_t actual_bcc = 0;
+	for(int uid_byte=0; uid_byte<4; uid_byte++){
+		actual_bcc ^= data[uid_byte];
+	}
+	return (actual_bcc == bcc);
+}
+
+uint8_t validate_select_picc_buf(MFRC522_t *me, uint8_t *data)
+{
+	if(valid_bcc(data+2, data[6])){
+		printf("Received valid BCC, calculating CRC now\n");
+		data[NVB_INDEX] = 0x70;
+		MFRC522_calc_CRC(me, data, 7, data+7);
+	}
+	else{
+		printf("BCC WASN'T VALID!!\n");
+		me->status = MFRC522_ERROR;
+		me->error = SELECT_PICC_BCC_FAILURE;
+		return MFRC522_ERROR;
+	}
+
+	return me->status;
+}
 /**
  * MFRC522_select_PICC() - Handles selection of PICC via anticollision
  * algorithm defined in ISO/IEC14443-3.
@@ -448,8 +592,12 @@ void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
  * Bits (NVB). This continues until no collision occurs, which means the CLn
  * UID is complete.  
  *
+ * Return:
+ * - MFRC522_OK upon success
+ * - MFRC522_ERROR upon failure
+ *
  */
-void MFRC522_select_PICC(MFRC522_t *me)
+uint8_t MFRC522_select_PICC(MFRC522_t *me)
 {
 	uint8_t select_buf[9] = {0};
 	uint8_t select_buf_len = 2;
@@ -463,10 +611,10 @@ void MFRC522_select_PICC(MFRC522_t *me)
 		sel_buf_idx = 2;
 
 		// Send out inital UID request, *could use `do while` here
-		MFRC522_transeive(me, SELECT, select_buf, select_buf_len);
+		MFRC522_transeive(me, CLn, select_buf, select_buf_len);
 		while(CL_collision_count<=32){
 			if( MFRC522_collision_check(me, select_buf, &sel_buf_idx, &select_buf_len,&valid_bits, &valid_bytes) ){
-				MFRC522_transeive(me, SELECT, select_buf, select_buf_len);
+				MFRC522_transeive(me, CLn, select_buf, select_buf_len);
 				CL_collision_count++;
 				// Reset BitFramingReg
 				clear_reg_bits(me, BitFramingReg, 0x77);
@@ -481,9 +629,6 @@ void MFRC522_select_PICC(MFRC522_t *me)
 		// Received complete UID for CL within max collisions
 		if(CL_collision_count<32){
 			printf("-------------CL%X Complete!------------\n", CLn);
-			//Clear bit not included in partial byte before collision
-			//uint8_t valid_bit_msk = create_valid_bitmask(valid_bits, 7); 
-			//select_buf[sel_buf_idx++] = (select_buf[sel_buf_idx])&valid_bit_msk;
 			printf("received partial value: %X\n", select_buf[sel_buf_idx]);
 			MFRC522_read_reg(me, FIFOLevelReg);
 			uint8_t fifo_level = me->Rx_buf;
@@ -494,22 +639,54 @@ void MFRC522_select_PICC(MFRC522_t *me)
 			// bits before valid_bits in FIFO are random and need to be cleared
 			// with mask
 			MFRC522_read_reg(me, FIFODataReg);
+			if(CL_collision_count>0){
+				me->Rx_buf |= create_valid_bitmask(0,valid_bits);
+			}
 			printf("sel_buf_idx: %i, Second part of partial byte: %X\n",sel_buf_idx, me->Rx_buf);
 			select_buf[sel_buf_idx++] |= me->Rx_buf;
 
-			//Only go upto fifo_level+1 to offset SEL and NVB but exclude BCC
-			//at end
-			for(int uid_byte=valid_bytes+3; uid_byte<fifo_level+1; uid_byte++){
+			// valid_bytes+3 skips already read bytes and SEL, NVB and just
+			// read byte, FIFO level doesn't include SEL and NVB byte offset so
+			// add 2 for fifo_level 
+			for(int uid_byte=valid_bytes+3; uid_byte<fifo_level+2; uid_byte++){
 				MFRC522_read_reg(me, FIFODataReg);
 				select_buf[uid_byte] = me->Rx_buf;
 			}
-			for(int i=0; i<6; i++){
+			if( validate_select_picc_buf(me, select_buf)!=0 ){
+				printf("Selection failed :(\n");
+				me->status = MFRC522_ERROR;
+				me->error =  SELECT_PICC_FAILURE; 
+				return MFRC522_ERROR;	
+
+			}
+			printf("Selection complete and valid!\n");
+			for(int i=0; i<=8; i++){
 				printf("SEL buf %i: %X\n",i,select_buf[i]);
 			}
+			MFRC522_transeive(me, SELECT_CL1, select_buf, 9);
+			// First byte in fifo is SAK, 
+			MFRC522_read_reg(me, FIFODataReg);
+			// If SAK doesn't have `1` bit in pos 3 of byte, then UID is complete
+			if( !((me->Rx_buf) & PICC_SAK_UID_INCOMPLETE) ){
+				me->curr_picc.picc_uid_complete = TRUE;
+				me->curr_picc.picc_state = PICC_ACTIVE;
+				// Copy UID into picc struct
+				// TODO: Make compatible with PICC UID size > 1
+				// TODO: Verify CRC
+				for(int i=0; i<5; i++)
+					me->curr_picc.picc_uid[i] = select_buf[i+2];
+				printf("SELECTION COMPLETE!!\n");
+				return MFRC522_OK;
+			}
 		}
-		// Check SAK
-		break;
+		else{
+			printf("Exceeded max collisions");
+			me->status = MFRC522_ERROR;
+			me->error = SELECT_PICC_FAILURE;
+			return MFRC522_ERROR;
+		}
 	}
+	return MFRC522_ERROR;
 }
 
 /**
@@ -693,7 +870,7 @@ void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf )
 	}
 }
 
-void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr)
+void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t *result)
 {
 	uint8_t read_fifo_data[4] = {READ_PICC, block_addr};
 	uint8_t crc_res[2] = {0};
@@ -714,8 +891,47 @@ void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr)
 
 	for(int i=0; i<fifo_datalevel; i++){
 		MFRC522_read_reg(me, FIFODataReg);
-		printf("Byte %i: %X\n",i, me->Rx_buf);
+		result[i] = me->Rx_buf;
 	}
+}
+
+uint8_t MFRC522_write_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t data_buf[18])
+{
+	uint8_t write_picc_buf[4] = {WRITE_PICC, block_addr};
+	uint8_t received_AK =0, received_num_bits = 0;
+	MFRC522_calc_CRC(me, write_picc_buf, 2, write_picc_buf+2);
+
+	// Send PICC we want to write to block
+	MFRC522_transeive(me, WRITE_PICC, write_picc_buf, 4);
+	MFRC522_read_reg(me, FIFODataReg);
+	received_AK = me->Rx_buf;
+	// Verify ControlReg[2:0] is 4, meaning last byte written in FIFO has 4 bits
+	MFRC522_read_reg(me, ControlReg); 
+	received_num_bits = me->Rx_buf&Control_RxLastBits_Msk;
+	if( (received_AK!=PICC_WRITE_ACK) || (received_num_bits!=4) ){
+		me->status = MFRC522_ERROR;
+		me->error = WRITE_PICC_FAILURE;
+		printf("NAK: Failed to REQUEST write to block. NAK: %X, rcved bits: %X \n", received_AK, received_num_bits);
+		return MFRC522_ERROR;
+	}
+	// Calc CRC and append to data_buf 
+	MFRC522_calc_CRC(me, data_buf, 16, data_buf+16);
+
+	// Now send buf of data destined for `block_addr`	
+	MFRC522_transeive(me, WRITE_PICC, data_buf, 18);
+	// Verify ControlReg[2:0] is 4 meaning last byte written in FIFO has 4 bits
+	MFRC522_read_reg(me, FIFODataReg);
+	received_AK = me->Rx_buf;
+	MFRC522_read_reg(me, ControlReg); 
+	received_num_bits = me->Rx_buf&Control_RxLastBits_Msk;
+
+	if( (received_AK!=PICC_WRITE_ACK) || (received_num_bits!=4) ){
+		me->status = MFRC522_ERROR;
+		printf("Failed to WRITE to block. NAK\n");
+		me->error = WRITE_PICC_FAILURE;
+		return MFRC522_ERROR;
+	}
+	return MFRC522_OK;
 }
 
 
@@ -730,26 +946,26 @@ void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr)
  *
  *
  */
-void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6], uint8_t uid[4])
+uint8_t MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6])
 {
 	uint8_t mf_auth_buf[12] = {0};
 	uint8_t com_irq = 0;
 	uint8_t status2 = 0;
 
+	if( !(me->curr_picc.picc_state == PICC_ACTIVE) ){
+		printf("MFAuth failed! PICC has not been selected\n");
+		return MFRC522_ERROR;
+	}
 	MFRC522_flush_FIFO(me);
 	MFRC522_clear_IRQ(me);
-	//TODO: add to defines, this is for KEYA, KEYB=0x61
-	//mf_auth_buf[0] = 0x60;
-	//mf_auth_buf[1] = block_addr;
+
 	MFRC522_write_reg(me, FIFODataReg, MFAUTH_KEYA);
 	MFRC522_write_reg(me, FIFODataReg, block_addr);
 	for(int i=0; i<6; i++){
-		//mf_auth_buf[i+2] = sector_key[i];
 		MFRC522_write_reg(me, FIFODataReg, sector_key[i]);
 	}
 	for(int i=0; i<4; i++){
-		//mf_auth_buf[i+8] = uid[i];
-		MFRC522_write_reg(me, FIFODataReg, uid[i]);
+		MFRC522_write_reg(me, FIFODataReg, me->curr_picc.picc_uid[i]);
 	}
 	MFRC522_write_reg(me, CommandReg, MFAuthent);
 	//start timer (Doesn't seem to do anything rn)
@@ -760,42 +976,49 @@ void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6],
 		MFRC522_read_reg(me, Status2Reg);
 		status2 = me->Rx_buf;
 	}while( !(status2 & Status2_MFCrypto1On) || (com_irq & (ComIrq_TimerIrq|ComIrq_IdleIrq) ) );
-	if(status2 & Status2_MFCrypto1On)
+	if(status2 & Status2_MFCrypto1On){
 		printf("MFAuthent connection Successful\n");
-	if(com_irq & ComIrq_IdleIrq)
+		return MFRC522_OK;
+	}
+	if(com_irq & ComIrq_IdleIrq){
 		printf("MFAuth completed and returned to IDLE\n");
-	if(com_irq & ComIrq_TimerIrq)
+		return MFRC522_OK;
+	}
+	if(com_irq & ComIrq_TimerIrq){
 		printf("MFAuth timed out\n");
-
+		return MFRC522_ERROR;
+	}
+	return MFRC522_ERROR;
 }
 
 /*
  * data_buf needs to include CMD to make it easier to represent all data for
  * a SEL command and so it's included in buffer when calculating CRC
- * TODO: Change `data_buf` to include CMD and just write to FIFO
  * One thing is to calculate CRC we need to write the same data to FIFO,
  * ideally we just write data to FIFO once, calc CRC
+ * TODO: Calc CRC here, have argument to determine if CRC is required 
  */
-void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t data_buf_len)
+void MFRC522_transeive(MFRC522_t *me, PCD_CMD_t cmd, uint8_t *data_buf, uint8_t data_buf_len)
 {
 	uint8_t irq_val = 0;
 	MFRC522_flush_FIFO(me);
 	MFRC522_clear_IRQ(me);
 
 	MFRC522_read_reg(me, FIFOLevelReg);
-	printf("Before Transceive, Fifo level: %i\n", me->Rx_buf);
-
+	//printf("Before Transceive, Fifo level: %i\n", me->Rx_buf);
 
 	//Check if data is not null, then write to FIFO
 	if(data_buf){
+		printf("Transeive data:\n");
 		for(int i=0; i<data_buf_len; i++){
+			printf("%i: %X\n", i, data_buf[i]);
 			MFRC522_write_reg(me, FIFODataReg, data_buf[i]);
 		}
 	}
 	else{
 		printf("Invalid `data_buf` for transeive function\n");
 		me->status = MFRC522_ERROR;
-		me->error = PCD_TRANSEIVE_FAILURE;
+		me->error = PCD_TRANSIEVE_FAILURE;
 		return;
 	}
 	//write transceive command, don't set bits, that causes failure of transmission
@@ -806,20 +1029,31 @@ void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t da
 	do{
 		MFRC522_read_reg(me, ComIrqReg);
 		irq_val = me->Rx_buf;
-	}while(!( (irq_val & (ComIrq_RxIrq|ComIrq_IdleIrq)) || (irq_val & ComIrq_TimerIrq) ));
+	}while(!(irq_val & (ComIrq_RxIrq|ComIrq_IdleIrq|ComIrq_TimerIrq) ));
 
 	if(irq_val & ComIrq_RxIrq)
 		printf("Rx IRQ received\n");
 	if(irq_val & ComIrq_IdleIrq)
 		printf("Idle IRQ received\n");
-	if(irq_val & ComIrq_TimerIrq)
-		printf("Timer timed out received\n");
-	MFRC522_read_reg(me, RxModeReg);
-	printf("irq_val: %X, RxModeReg: %X\n", irq_val, me->Rx_buf);
+	if(irq_val & ComIrq_TimerIrq){
+		//printf("Timer timed out received\n");
+		me->status = MFRC522_ERROR;
+		me->error = PCD_TRANSIEVE_TIMEOUT;
+		return;
+	}
+	// Don't want to return for error since collisions cause error IRQ from PCD
 	if(irq_val & ComIrq_ErrIrq){
 		MFRC522_read_reg(me, ErrorReg);
 		printf("Error reg: %X\n", me->Rx_buf);
+		me->status = MFRC522_ERROR;
+		me->error = PCD_TRANSIEVE_ERROR;
 	}
+	else {
+		me->status = MFRC522_OK;
+	}
+	MFRC522_read_reg(me, RxModeReg);
+	printf("irq_val: %X, RxModeReg: %X\n", irq_val, me->Rx_buf);
+	
 	MFRC522_read_reg(me, FIFOLevelReg);
 	printf("Completed Transceive, Fifo level: %X\n", me->Rx_buf);
 }

@@ -71,6 +71,7 @@
 // ControlReg
 #define Control_TStartNow (1<<6)
 #define Control_TStopNow (1<<6)
+#define Control_RxLastBits_Msk (0x07)
 
 // TxControlReg
 #define TxControl_Tx1RFEn 1U
@@ -104,16 +105,26 @@
 
 /*--------------------- Collision Algo Definitions ---------------------*/
 //Collision algo adjacent defines like select buffer for transmission 
-#define SELECT_CL1 0x93
-#define SELECT_CL2 0x95
-#define SELECT_CL3 0x97
 #define SEL_INDEX 0
 #define NVB_INDEX 1
 #define COLL_OCCURRED 1 
 
 
+
+/*--------------------- PICC Definitions ---------------------*/
+#define PICC_IS_NOT_ISOIEC1443_COMPLIANT 0
+#define PICC_IS_ISOIEC1443_COMPLIANT 1
+#define PICC_U
+#define PICC_IS_UKNOWN_ISOIEC1443_COMPLIANT 2
+#define PICC_SAK_UID_INCOMPLETE 0x04
+#define PICC_WRITE_ACK 0xA
+
 /*--------------------- MISC Definitions ---------------------*/
 #define STARTSEND (1<<7)
+#define TRUE 1
+#define FALSE 0
+#define NO_ATQA_RECIEVED 1
+#define ATQA_RECIEVED 0
 #define READ 0
 #define WRITE 1
 #define SPI_TIMEOUT 1000U
@@ -225,8 +236,13 @@ typedef enum MFRC522_error {
 	TIMER_ALRDY_RUNNING,
 	READ_REG_FAILURE,
 	WRITE_REG_FAILURE,
-	PCD_TRANSEIVE_FAILURE,
+	PCD_TRANSIEVE_FAILURE,
+	PCD_TRANSIEVE_ERROR,
+	PCD_TRANSIEVE_TIMEOUT,
 	FUNC_ASSERT_FAILURE,
+	SELECT_PICC_BCC_FAILURE,
+	SELECT_PICC_FAILURE,
+	WRITE_PICC_FAILURE,
 } MFRC522_error;
 
 typedef enum MFRC522_timer_t {
@@ -239,10 +255,19 @@ typedef enum MFRC522_timer_t {
 typedef enum PCD_CMD_t {
 	REQA = 0x26,
 	WUPA = 0x52,
-	SELECT = 0x93,
-	HLTA = 0x50, 
+	SELECT_CL1 = 0x93,
+	SELECT_CL2 = 0x95,
+	SELECT_CL3 = 0x97,
+	HLTA = 0x51, 
 	RATS = 0xE0,
-} PCD_CMD;
+} PCD_CMD_t;
+
+typedef enum PICC_SIZE_t{
+	SINGLE,
+	DOUBLE, 
+	TRIPLE,
+	RFU
+} PICC_SIZE_t;
 
 typedef enum PICC_CMD_t{
 	READ_PICC = 0x30,
@@ -255,11 +280,28 @@ typedef enum PICC_CMD_t{
 	TRANSFER_PICC = 0xB0,
 } PICC_CMD;
 
+typedef enum PICC_STATE_t{
+	PICC_IDLE,
+	PICC_READY,
+	PICC_ACTIVE,
+	PICC_HALT,
+	PICC_STATE_UNKNOWN
+} PICC_STATE_t;
+
+typedef struct PICC_t{
+	PICC_STATE_t picc_state;		
+	PICC_SIZE_t picc_uid_size;
+	uint8_t picc_uid_complete;
+	// Max size is triple with UID0-UID9(excludes CT)
+	uint8_t picc_uid[10];
+	uint8_t iso_14443_compliant;
+} PICC_t;
 
 typedef struct MFRC522_t{
 	MFRC522_status status;
 	MFRC522_timer timer;
 	MFRC522_error error;
+	PICC_t curr_picc;
 	SPI_HandleTypeDef hspi;
 	uint8_t Rx_buf;
 	uint8_t Tx_buf;
@@ -267,7 +309,11 @@ typedef struct MFRC522_t{
 
 void clear_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t clear_bitmask);
 void set_reg_bits(MFRC522_t *me, PCD_reg reg, uint8_t set_bitmask);
-void MFRC522_SPI_init(MFRC522_t *me);
+uint8_t valid_bcc(uint8_t data[4], uint8_t bcc);
+uint8_t validate_select_picc_buf(MFRC522_t *me, uint8_t *data);
+void print_picc_select_info(MFRC522_t *me);
+void dump_sector_info(MFRC522_t *me, uint8_t sector);
+int MFRC522_SPI_init(MFRC522_t *me);
 int MFRC522_init(MFRC522_t *me);
 void GPIO_init();
 void MFRC522_deinit(MFRC522_t *me);
@@ -277,18 +323,20 @@ uint8_t MFRC522_addr_trans(uint8_t addr, uint8_t rw_mode);
 void MFRC522_soft_reset(MFRC522_t *me);
 void MFRC522_flush_FIFO(MFRC522_t *me);
 void MFRC522_clear_FIFO(MFRC522_t *me);
-void MFRC522_fifo_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint8_t print);
-void MFRC522_fifo_write_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len);
+void MFRC522_FIFO_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint8_t print);
+void MFRC522_FIFO_write_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len);
 void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *result);
-uint8_t MFRC522_self_test(MFRC522_t *me);
+int MFRC522_self_test(MFRC522_t *me);
+void init_picc(MFRC522_t *me, PICC_SIZE_t uid_size);
 void MFRC522_TxEnable(MFRC522_t *me);
 
-void MFRC522_REQA(MFRC522_t *me);
+uint8_t MFRC522_REQA(MFRC522_t *me);
 void MFRC522_SEL(MFRC522_t *me, uint8_t *uid_buf );
 void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf);
-void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr);
-void MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6], uint8_t serial_num[4]);
-void MFRC522_transeive(MFRC522_t *me, uint8_t cmd, uint8_t *data_buf, uint8_t data_buf_len);
+void MFRC522_read_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t *result);
+uint8_t MFRC522_write_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t data_buf[16]);
+uint8_t MFRC522_auth_PICC(MFRC522_t *me, uint8_t block_addr, uint8_t sector_key[6]);
+void MFRC522_transeive(MFRC522_t *me, PCD_CMD_t cmd, uint8_t *data_buf, uint8_t data_buf_len);
 
 void MFRC522_clear_IRQ(MFRC522_t *me);
 void MFRC522_stop_encrypt_comm(MFRC522_t *me);
@@ -296,6 +344,6 @@ void MFRC522_stop_encrypt_comm(MFRC522_t *me);
 uint8_t create_valid_bitmask(uint8_t start_bit, uint8_t end_bit);
 uint8_t MFRC522_collision_check(MFRC522_t *me, uint8_t *select_picc_buf, uint8_t *sel_buf_idx, uint8_t* buf_len, uint8_t *valid_bits,uint8_t *valid_bytes);
 
-void MFRC522_select_PICC(MFRC522_t *me);
+uint8_t MFRC522_select_PICC(MFRC522_t *me);
 
 #endif //MFRC522_H
