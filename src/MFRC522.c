@@ -2,9 +2,9 @@
  * Major TODO:
  * - Change MFRC522_read_reg to return read value instead of status for
  *   readability. print error instead of return  
+ * - Add timer to break out of any while loop that waits for MFRC522
  * - Add HALTA command 
  * - Add WUPA command
- * - Add PICC write functionality
  * - Add block access condition check function
  */
 
@@ -84,15 +84,17 @@ int MFRC522_SPI_init(MFRC522_t *me)
  * MFRC522_init() - Initializes SPI, GPIO and basic status of MFRC522 struct
  *
  * Return: Status of initialization
- * 0 = Success
- * -1 = SPI failure
- * -2 = Version verification failed
+ * MFRC522_OK = Success
+ * MFRC522_ERROR = SPI or version version failure 
  */
 int MFRC522_init(MFRC522_t *me)
 {
 	HAL_Init();
-	if(MFRC522_SPI_init(me) == -1)
-		return -1;
+	if(MFRC522_SPI_init(me) == -1){
+		me->status = MFRC522_ERROR;
+		me->error = SPI_INIT_FAILED;
+		return MFRC522_ERROR;
+	}
 	GPIO_init();
 	me->status = IDLE;
 	me->error = NO_ERROR;
@@ -115,14 +117,19 @@ int MFRC522_init(MFRC522_t *me)
 	MFRC522_read_reg(me, VersionReg);
 	if(me->Rx_buf == 0x92){
 		printf("\n\nSuccessfully initialized MFRC522\n");
-		return 0;
+		return MFRC522_OK;
 	}
 	else{
 		printf("Failed to initialize MFRC522\n");
-		return -2;
+		me->status = MFRC522_ERROR;
+		me->error  = MFRC522_INIT_FAILED;
+		return MFRC522_ERROR;
 	}
 }
 
+/**
+ * MFRC522_TxEnable() - Enables both 13.56MHz transmitter outputs
+ */
 void MFRC522_TxEnable(MFRC522_t *me)
 {
 	set_reg_bits(me, TxControlReg, TxControl_Tx1RFEn|TxControl_Tx2RFEn);
@@ -134,6 +141,13 @@ void MFRC522_deinit(MFRC522_t *me)
 }
 
 
+/**
+ * print_picc_select_info() - Helper function to display a selected PICCs basic
+ * info to serial console.
+ *
+ * MFRC522_select_PICC() must be called to display info. Pulls info from
+ * `curr_picc` member struct.  
+ */
 void print_picc_select_info(MFRC522_t *me){
 	uint8_t picc_num_bytes = ((me->curr_picc.picc_uid_size)+1)*3+1;
 	printf("PICC UID num bytes: %i\n", picc_num_bytes);
@@ -152,13 +166,13 @@ void print_picc_select_info(MFRC522_t *me){
 	}
 }
 
-/* dump_sector_info() - Prints out all bytes (in hex) to serial output for
+/* dump_sector_info() - Prints out all bytes (in hex) to serial console for
  * a single sector of PICC.
  *
- * Ensure PICC is selected and authentication has established encrypted
- * communication. 
+ * PICC must be selected and authenticated (with `MFRC522_auth_PICC`) to read
+ * and dump info.  
  * `Sector` parameter is multiplied by 4 to get starting block address of
- * sector. 
+ * sector. Each sector contains 4 blocks each with 16 bytes.
  */
 void dump_sector_info(MFRC522_t *me, uint8_t sector)
 {
@@ -185,7 +199,6 @@ void dump_sector_info(MFRC522_t *me, uint8_t sector)
 	}
 	printf("\n\n");
 }
-
 
 
 /**
@@ -263,7 +276,6 @@ uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 		me->status = MFRC522_OK;
 		return MFRC522_OK;
 	}
-	//Might want to error handle here and not return 0, as 0 is a valid value
 	else{
 		me->status = MFRC522_ERROR;
 		me->error = READ_REG_FAILURE;
@@ -271,6 +283,13 @@ uint8_t MFRC522_read_reg(MFRC522_t *me, PCD_reg reg)
 	}
 }
 
+/**
+ * MFRC522_write_reg() - Write one byte to `reg`. 
+ * Value is placed in `me->Tx_buf` and the status of the
+ * function is returned.
+ *
+ * Return: `MFRC522_ERROR` if error occurs, otherwise `MFRC522_OK`.
+ */
 uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
 {
 	if( !(is_initialized(me)) )
@@ -289,14 +308,22 @@ uint8_t MFRC522_write_reg(MFRC522_t *me, PCD_reg reg, uint8_t data)
 	}
 	HAL_GPIO_WritePin(GPIOB, CSS_PIN, GPIO_PIN_SET);
 	if(me->hspi.State != HAL_SPI_STATE_ERROR)
-		return HAL_OK;
+		return MFRC522_OK;
 	else{
 		me->status = MFRC522_ERROR;
 		me->error = READ_REG_FAILURE;
 		return MFRC522_ERROR;
 	}
+	return MFRC522_ERROR;
 }
 
+
+/**
+ * MFRC522_write_cmd() - Wrapper for `MFRC522_write_reg` specifically for
+ * MFRC522 commands.
+ *
+ * @cmd: MFRC522 command, described in section 10.3 of NXP MFRC522 datasheet.
+ */
 void MFRC522_write_cmd(MFRC522_t *me, MFRC522_cmd cmd)
 {
 	if( !(is_initialized(me)) )
@@ -321,6 +348,10 @@ void MFRC522_soft_reset(MFRC522_t *me)
 	}while(cmd_reg & (CMDREG_PWRDWN));
 }
 
+/**
+ * MFRC522_flush_FIFO() - Sets bit 7 of FIFOLevelReg to clear read pointer,
+ * write pointer, and ErrorReg BufferOvfl bit. 
+ */
 void MFRC522_flush_FIFO(MFRC522_t *me)
 {
 	if( !(is_initialized(me)) )
@@ -328,6 +359,13 @@ void MFRC522_flush_FIFO(MFRC522_t *me)
 	MFRC522_write_reg(me, FIFOLevelReg, FIFOLevel_FlushBuffer);
 }
 
+/**
+ * MFRC522_clear_FIFO() - Writes value 0 to each byte of FIFO to clear residual
+ * values. 
+ *
+ * When flushing FIFO, it will reset pointers but values remain, meaning
+ * after a reset, reading results in arbitrary value.
+ */
 void MFRC522_clear_FIFO(MFRC522_t *me)
 {
 	MFRC522_write_reg(me, FIFOLevelReg, FIFOLevel_FlushBuffer);
@@ -337,6 +375,13 @@ void MFRC522_clear_FIFO(MFRC522_t *me)
 	MFRC522_write_reg(me, FIFOLevelReg, FIFOLevel_FlushBuffer);
 }
 
+/**
+ * MFRC522_FIFO_read_stream() - Read series of bytes from FIFO.
+ *
+ * @buf: buffer to store each byte read from FIFO.
+ * @buf_len: size of buffer and number of bytes to read from FIFO.
+ * @print: determines if bytes are printed read from FIFO.
+ */
 void MFRC522_FIFO_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint8_t print)
 {
 	MFRC522_read_reg(me, FIFOLevelReg);
@@ -351,6 +396,12 @@ void MFRC522_FIFO_read_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len, uint
 	}
 }
 
+/**
+ * MFRC522_FIFO_write_stream() - Write `buf_len` number of bytes to FIFO
+ *
+ * @buf: Data destined for FIFO.
+ * @buf_len: size of buffer and number of bytes written to FIFO. 
+ */
 void MFRC522_FIFO_write_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len)
 {
 	for(int i=0; i<buf_len; i++){
@@ -358,14 +409,24 @@ void MFRC522_FIFO_write_stream(MFRC522_t *me, uint8_t *buf, uint8_t buf_len)
 	}
 }
 
-void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *result)
+/**
+ * MFRC522_calc_CRC() - Uses MFRC522 module to calculate ISO/IEC14443 CRC.
+ *
+ * Data is sent to MFRC522, then waits for MFRC522 to set CRCIRQ. Once
+ * CRCIRQ is set, read 2 bytes of CRC result and append to `result`. 
+ *
+ * @data_buf: Data used in CRC calculation.
+ * @data_buf_size: Defines size of data buffer.
+ * @result: Reference to where CRC result is stored. 
+ */
+void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data_buf, uint8_t data_buf_size, uint8_t *result)
 {
 	MFRC522_write_reg(me, CommandReg, IDLE);
 	// Clear CRCIRQ
-	MFRC522_write_reg(me, DivIrqReg, DivIrq_CRCIrq);
+	clear_reg_bits(me, DivIrqReg, DivIrq_CRCIrq);
 	MFRC522_flush_FIFO(me);
-	for(int i=0; i<data_size; i++){
-		MFRC522_write_reg(me, FIFODataReg, data[i]);
+	for(int i=0; i<data_buf_size; i++){
+		MFRC522_write_reg(me, FIFODataReg, data_buf[i]);
 	}
 	MFRC522_write_reg(me, CommandReg, CalcCRC);
 
@@ -379,7 +440,6 @@ void MFRC522_calc_CRC(MFRC522_t *me, uint8_t *data, uint8_t data_size, uint8_t *
 	result[1] = me->Rx_buf;
 
 	MFRC522_write_reg(me, CommandReg, IDLE);
-
 }
 
 /**
@@ -443,6 +503,9 @@ int MFRC522_self_test(MFRC522_t *me)
 }
 
 
+/**
+ * init_picc() - Creates a PICC instance and assigns default charateristics.
+ */
 void init_picc(MFRC522_t *me, PICC_SIZE_t uid_size){
 	me->curr_picc.picc_state = PICC_STATE_UNKNOWN;
 	me->curr_picc.picc_uid_complete = 0;
@@ -451,6 +514,14 @@ void init_picc(MFRC522_t *me, PICC_SIZE_t uid_size){
 }
 
 
+/**
+ * MFRC522_REQA() - Configures and sends out request to PICCs.
+ *
+ * REQA command transitions PICCs in IDLE state to READY state. PICCs in HALT
+ * state will not respond. 
+ * REQA is a short frame(7 bit) command, thus BitFramingReg mustbe configured
+ * accordingly.
+ */
 uint8_t MFRC522_REQA(MFRC522_t *me)
 {
 	uint8_t atqa[2] = {0};
@@ -483,12 +554,24 @@ uint8_t MFRC522_REQA(MFRC522_t *me)
 		atqa[1] = me->Rx_buf;
 		//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
 		clear_reg_bits(me, BitFramingReg, 0x07);
+		//UID size is determined by bit 7-8 of ATQA
 		init_picc(me, (atqa[0])>>6);
 
 		return ATQA_RECIEVED;
 	}
 }
 
+/** 
+ * MFRC522_WUPA() - Configures and sends out WUPA command to PICCs.
+ *
+ * WUPA command transitions PICCs from either HALT or IDLE state to READY
+ * state.
+ * WUPA is a short frame(7 bit) command, thus BitFramingReg mustbe configured
+ * accordingly.
+ *
+ * TODO: Test this works, need to implement halt function
+ *
+ */
 uint8_t MFRC522_WUPA(MFRC522_t *me)
 {
 	uint8_t atqa[2] = {0};
@@ -527,31 +610,21 @@ uint8_t MFRC522_WUPA(MFRC522_t *me)
 	}
 }
 
-void MFRC522_CL1(MFRC522_t *me, uint8_t *res_buf)
-{
-	uint8_t sel_cl1_buf[2] = {SELECT_CL1, 0x20};
-	uint8_t fifo_datalevel = 0;
-	//Ensure BitFramingReg is set for sending 8 bits
-	MFRC522_read_reg(me, BitFramingReg);
-	//Clear first 3 bits to reset sending to 8 bits instead of 7 from REQA
-	clear_reg_bits(me, BitFramingReg, 0x07);
-	MFRC522_clear_IRQ(me);
-	//Clear collisions to prep MFRC522
-	clear_reg_bits(me, CollReg, Coll_ValuesAfterColl);
-	MFRC522_transeive(me, SELECT_CL1, sel_cl1_buf, 2);
 
-	//Print to test for now
-	MFRC522_read_reg(me, FIFOLevelReg);
-	printf("Level Reg after SEL CL1: %X\n", me->Rx_buf);
-	fifo_datalevel = me->Rx_buf;
-
-	for(int i=0; i<fifo_datalevel; i++){
-		MFRC522_read_reg(me, FIFODataReg);
-		res_buf[i] = me->Rx_buf;
-		printf("Byte %i: %X\n",i, me->Rx_buf);
-	}
-}
-
+/** 
+ * valid_bcc() - Validates passed BCC against calculated BCC based on provided
+ * data array.
+ *
+ * ISO/IEC 14443 defines BCC to be check byte for UID CLn of previous 4 bytes.
+ * Thus both data array and for loop are of size 4.
+ *
+ * @data: data used to calculate UID CLn check byte.
+ * @bcc: received check byte that is validated against calculated bcc. 
+ *
+ * Return:
+ *	0 = check bytes do not match
+ *	1 = check bytes match
+ */
 uint8_t valid_bcc(uint8_t data[4], uint8_t bcc)
 {
 	uint8_t actual_bcc = 0;
@@ -561,6 +634,15 @@ uint8_t valid_bcc(uint8_t data[4], uint8_t bcc)
 	return (actual_bcc == bcc);
 }
 
+/**
+ * validate_select_picc_buf() - Used once CLn is complete to check BCC
+ * calculate CRC to send to PICC for final selection step of CLn.
+ *
+ * Function handles NVB for full CLn selection in NVB index.
+ * @data: Complete selection buffer with {SEL, NVB, UID0..., BCC1,
+ * BCC2} values.
+ *
+ */
 uint8_t validate_select_picc_buf(MFRC522_t *me, uint8_t *data)
 {
 	if(valid_bcc(data+2, data[6])){
